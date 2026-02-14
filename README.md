@@ -1,0 +1,1 @@
+﻿# Sinhala HTR Writer-Independent
