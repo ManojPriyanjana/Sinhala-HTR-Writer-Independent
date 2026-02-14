@@ -11,3 +11,12 @@ __pycache__/
 
 # VS Code
 .vscode/
+
+# Datasets / generated images (DO NOT push)
+data/raw_pages/
+data/segmented_lines/
+data/final_splits/
+
+# Debug outputs
+results/
+report/figures/
