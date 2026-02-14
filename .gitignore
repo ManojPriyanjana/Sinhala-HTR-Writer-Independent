@@ -1,0 +1,13 @@
+# Datasets (do NOT push to GitHub)
+data/raw_pages/
+data/segmented_lines/
+
+# Results (optional)
+results/
+
+# Python
+__pycache__/
+*.pyc
+
+# VS Code
+.vscode/
