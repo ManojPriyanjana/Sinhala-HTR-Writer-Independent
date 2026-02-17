@@ -27,3 +27,8 @@ report/figures/
 backend/venv/
 backend/__pycache__/
 frontend/node_modules/
+
+
+node_modules/
+venv/
+__pycache__
