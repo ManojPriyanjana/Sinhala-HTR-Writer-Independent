@@ -1,6 +1,8 @@
 # Datasets (do NOT push to GitHub)
 data/raw_pages/
 data/segmented_lines/
+data/deleted_lines/
+
 
 # Results (optional)
 results/

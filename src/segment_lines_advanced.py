@@ -10,7 +10,7 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 DBG_DIR.mkdir(parents=True, exist_ok=True)
 
 # Pilot first
-PILOT_PER_GRADE = 3   # set None later to run all
+PILOT_PER_GRADE = None      # set None later to run all
 PAD_Y = 8
 MIN_LINE_H = 18
 
