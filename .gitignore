@@ -22,3 +22,8 @@ data/final_splits/
 # Debug outputs
 results/
 report/figures/
+
+
+backend/venv/
+backend/__pycache__/
+frontend/node_modules/
