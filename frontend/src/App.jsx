@@ -1,97 +1,182 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8000";
+const HEALTH_CHECK_INTERVAL_MS = 3000;
+const HEALTH_CHECK_TIMEOUT_MS = 1500;
+const PREDICT_TIMEOUT_MS = 90000;
+const FILE_PREVIEW_LIMIT = 10;
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function fileId(file) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
 
 export default function App() {
   const inputRef = useRef(null);
-
   const [apiOnline, setApiOnline] = useState(false);
-  const [files, setFiles] = useState([]); // File[]
+  const [checkingApi, setCheckingApi] = useState(true);
+  const [dragActive, setDragActive] = useState(false);
+  const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
-
-  // results: [{ name, text, confidence }]
   const [results, setResults] = useState([]);
+  const [errorMessage, setErrorMessage] = useState("");
+  const [copiedKey, setCopiedKey] = useState("");
 
-  // -------------------- API Health --------------------
   useEffect(() => {
-    let alive = true;
+    let active = true;
 
-    async function check() {
+    async function checkHealth() {
       try {
-        await axios.get(`${API_BASE}/health`, { timeout: 1200 });
-        if (alive) setApiOnline(true);
+        await axios.get(`${API_BASE}/health`, { timeout: HEALTH_CHECK_TIMEOUT_MS });
+        if (active) setApiOnline(true);
       } catch {
-        if (alive) setApiOnline(false);
+        if (active) setApiOnline(false);
+      } finally {
+        if (active) setCheckingApi(false);
       }
     }
 
-    check();
-    const id = setInterval(check, 2000);
+    checkHealth();
+    const intervalId = setInterval(checkHealth, HEALTH_CHECK_INTERVAL_MS);
     return () => {
-      alive = false;
-      clearInterval(id);
+      active = false;
+      clearInterval(intervalId);
     };
   }, []);
 
-  // -------------------- Helpers --------------------
-  const totalSizeMB = useMemo(() => {
-    const sum = files.reduce((a, f) => a + f.size, 0);
-    return (sum / (1024 * 1024)).toFixed(2);
-  }, [files]);
+  const totalBytes = useMemo(() => files.reduce((sum, file) => sum + file.size, 0), [files]);
 
-  function handleChoose(e) {
-    const picked = Array.from(e.target.files || []);
-    setFiles(picked);
+  const averageConfidence = useMemo(() => {
+    if (!results.length) return 0;
+    const sum = results.reduce((acc, item) => acc + clamp01(item.confidence), 0);
+    return sum / results.length;
+  }, [results]);
+
+  function appendFiles(nextFiles) {
+    const imageFiles = nextFiles.filter(
+      (file) => file.type.startsWith("image/") || /\.(png|jpg|jpeg)$/i.test(file.name)
+    );
+
+    setFiles((prev) => {
+      const existing = new Set(prev.map(fileId));
+      const merged = [...prev];
+      for (const file of imageFiles) {
+        const key = fileId(file);
+        if (!existing.has(key)) {
+          existing.add(key);
+          merged.push(file);
+        }
+      }
+      return merged;
+    });
+
+    setResults([]);
+    setErrorMessage("");
+  }
+
+  function openFilePicker() {
+    inputRef.current?.click();
+  }
+
+  function handleChoose(event) {
+    const picked = Array.from(event.target.files || []);
+    appendFiles(picked);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function handleRemoveFile(key) {
+    setFiles((prev) => prev.filter((file) => fileId(file) !== key));
     setResults([]);
   }
 
   function clearAll() {
     setFiles([]);
     setResults([]);
+    setErrorMessage("");
+    setCopiedKey("");
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  // -------------------- Recognize (batch in ONE request) --------------------
+  function handleDragEnter(event) {
+    event.preventDefault();
+    setDragActive(true);
+  }
+
+  function handleDragOver(event) {
+    event.preventDefault();
+    setDragActive(true);
+  }
+
+  function handleDragLeave(event) {
+    event.preventDefault();
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      setDragActive(false);
+    }
+  }
+
+  function handleDrop(event) {
+    event.preventDefault();
+    setDragActive(false);
+    const dropped = Array.from(event.dataTransfer.files || []);
+    appendFiles(dropped);
+  }
+
   async function handleRecognize() {
-    if (!files.length || loading) return;
+    if (!files.length || loading || !apiOnline) return;
 
     setLoading(true);
     setResults([]);
+    setErrorMessage("");
+    setCopiedKey("");
 
     try {
       const formData = new FormData();
-
-      // IMPORTANT: backend expects field name = "files"
-      // and supports multiple files
-      for (const f of files) {
-        formData.append("files", f);
+      for (const file of files) {
+        formData.append("files", file, file.name);
       }
 
-      const res = await axios.post(`${API_BASE}/predict`, formData, {
+      const response = await axios.post(`${API_BASE}/predict`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
-        timeout: 60000,
+        timeout: PREDICT_TIMEOUT_MS,
       });
 
-      // backend returns: { lines: [ { line_id, text, confidence, meta } ] }
-      const lines = res?.data?.lines || [];
-
-      // Map backend response to UI rows
-      const mapped = lines.map((item) => ({
-        name: item?.line_id || "unknown",
-        text: item?.text ?? "",
-        confidence: Number(item?.confidence ?? 0),
-      }));
+      const lines = Array.isArray(response?.data?.lines) ? response.data.lines : [];
+      const mapped = lines.map((item, index) => {
+        const name = item?.line_id || files[index]?.name || `line-${index + 1}`;
+        return {
+          key: `${name}-${index}`,
+          name,
+          text: typeof item?.text === "string" ? item.text : "",
+          confidence: clamp01(item?.confidence),
+          error: Boolean(item?.error),
+        };
+      });
 
       setResults(mapped);
-    } catch (err) {
-      console.error(err);
-      // Show a readable error result
+      if (!mapped.length) {
+        setErrorMessage("Backend responded, but no predictions were returned.");
+      }
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Prediction failed. Check backend logs and API URL.");
       setResults(
-        files.map((f) => ({
-          name: f.name,
-          text: "Error (check backend console)",
+        files.map((file, index) => ({
+          key: `${fileId(file)}-${index}`,
+          name: file.name,
+          text: "",
           confidence: 0,
+          error: true,
         }))
       );
     } finally {
@@ -99,141 +184,224 @@ export default function App() {
     }
   }
 
-  // -------------------- UI --------------------
+  async function copyText(text, key) {
+    if (!text || !navigator?.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => setCopiedKey(""), 1200);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  const statusLabel = checkingApi ? "Checking API" : apiOnline ? "API online" : "API offline";
+  const statusColor = checkingApi
+    ? "bg-amber-300"
+    : apiOnline
+      ? "bg-emerald-400"
+      : "bg-rose-400";
+
   return (
-    <div className="min-h-screen bg-slate-50 p-8">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">
-              Sinhala HTR System
-            </h1>
-            <p className="text-slate-600 text-sm mt-1">
-              Writer-Independent Line-Level Recognition
-            </p>
-          </div>
+    <div className="min-h-screen">
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+        <section className="glass-card rise-in rounded-3xl p-6 sm:p-8">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-cyan-200">
+                Writer-Independent HTR
+              </p>
+              <h1 className="mt-2 text-3xl font-semibold text-white sm:text-4xl">
+                Sinhala Handwriting Demo
+              </h1>
+              <p className="mt-3 max-w-2xl text-sm text-slate-300 sm:text-base">
+                Upload segmented line images and run recognition in one batch request.
+              </p>
+            </div>
 
-          <div className="flex items-center gap-2">
-            <div
-              className={`w-3 h-3 rounded-full ${
-                apiOnline ? "bg-green-500" : "bg-red-500"
-              }`}
-            ></div>
-            <span className="text-sm text-slate-700">
-              {apiOnline ? "API Online" : "API Offline"}
-            </span>
-          </div>
-        </div>
-
-        {/* Upload Section */}
-        <div className="bg-white rounded-xl shadow p-6 mb-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">Upload Line Images</h2>
-            <div className="text-xs text-slate-600">
-              {files.length ? `${files.length} file(s) • ${totalSizeMB} MB` : "No files selected"}
+            <div className="inline-flex items-center gap-3 rounded-full border border-slate-600/70 bg-slate-900/70 px-4 py-2 text-sm">
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${statusColor} ${
+                  checkingApi ? "animate-pulse" : ""
+                }`}
+              />
+              <span className="text-slate-200">{statusLabel}</span>
             </div>
           </div>
+        </section>
 
-          <div className="mt-4 flex flex-wrap gap-3 items-center">
+        <section className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+          <div className="glass-card rise-in-delay rounded-3xl p-5 sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-white sm:text-xl">Upload Line Images</h2>
+              <p className="text-xs text-slate-300 sm:text-sm">
+                {files.length ? `${files.length} files | ${formatBytes(totalBytes)}` : "No files selected"}
+              </p>
+            </div>
+
             <input
               ref={inputRef}
               type="file"
               multiple
               accept="image/png,image/jpeg,image/jpg"
               onChange={handleChoose}
-              className="block"
+              className="hidden"
             />
 
-            <button
-              onClick={handleRecognize}
-              disabled={!files.length || loading || !apiOnline}
-              className={`px-5 py-2 rounded-lg font-medium ${
-                !files.length || loading || !apiOnline
-                  ? "bg-slate-200 text-slate-500 cursor-not-allowed"
-                  : "bg-slate-900 text-white hover:bg-slate-800"
+            <div
+              onDragEnter={handleDragEnter}
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`mt-4 rounded-2xl border-2 border-dashed p-5 transition sm:p-6 ${
+                dragActive
+                  ? "border-cyan-300 bg-cyan-300/10"
+                  : "border-slate-500/60 bg-slate-900/35"
               }`}
             >
-              {loading ? "Recognizing..." : "Recognize"}
-            </button>
+              <p className="text-sm text-slate-200 sm:text-base">Drop images here or browse from disk.</p>
 
-            <button
-              onClick={clearAll}
-              disabled={!files.length && !results.length}
-              className={`px-5 py-2 rounded-lg font-medium ${
-                !files.length && !results.length
-                  ? "bg-slate-200 text-slate-500 cursor-not-allowed"
-                  : "bg-white border border-slate-200 text-slate-800 hover:bg-slate-100"
-              }`}
-            >
-              Clear
-            </button>
-          </div>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  onClick={openFilePicker}
+                  className="rounded-xl border border-cyan-300/70 bg-cyan-300/15 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:bg-cyan-300/25"
+                >
+                  Choose files
+                </button>
 
-          {/* Quick file list */}
-          {files.length > 0 && (
-            <div className="mt-4 text-sm text-slate-700">
-              <div className="font-medium mb-2">Selected:</div>
-              <ul className="list-disc pl-5 space-y-1">
-                {files.slice(0, 8).map((f) => (
-                  <li key={f.name} className="truncate">
-                    {f.name}
-                  </li>
-                ))}
-              </ul>
-              {files.length > 8 && (
-                <div className="text-xs text-slate-500 mt-2">
-                  Showing first 8 files…
+                <button
+                  onClick={handleRecognize}
+                  disabled={!files.length || loading || !apiOnline}
+                  className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                    !files.length || loading || !apiOnline
+                      ? "cursor-not-allowed bg-slate-700/50 text-slate-400"
+                      : "bg-emerald-500/90 text-emerald-950 hover:bg-emerald-400"
+                  }`}
+                >
+                  {loading ? "Recognizing..." : "Recognize"}
+                </button>
+
+                <button
+                  onClick={clearAll}
+                  disabled={!files.length && !results.length}
+                  className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                    !files.length && !results.length
+                      ? "cursor-not-allowed border-slate-700/50 text-slate-500"
+                      : "border-slate-500/80 text-slate-200 hover:bg-slate-700/40"
+                  }`}
+                >
+                  Clear
+                </button>
+              </div>
+
+              {files.length > 0 && (
+                <div className="mt-5">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">
+                    Selected files
+                  </p>
+                  <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {files.slice(0, FILE_PREVIEW_LIMIT).map((file) => {
+                      const key = fileId(file);
+                      return (
+                        <li
+                          key={key}
+                          className="flex items-center justify-between rounded-xl border border-slate-700/80 bg-slate-900/50 px-3 py-2"
+                        >
+                          <div className="min-w-0">
+                            <p className="truncate text-sm text-slate-100">{file.name}</p>
+                            <p className="text-xs text-slate-400">{formatBytes(file.size)}</p>
+                          </div>
+                          <button
+                            onClick={() => handleRemoveFile(key)}
+                            className="ml-3 rounded-lg border border-rose-300/50 px-2 py-1 text-xs text-rose-200 transition hover:bg-rose-400/10"
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                  {files.length > FILE_PREVIEW_LIMIT && (
+                    <p className="mt-2 text-xs text-slate-400">
+                      Showing first {FILE_PREVIEW_LIMIT} files.
+                    </p>
+                  )}
                 </div>
               )}
             </div>
-          )}
-        </div>
+          </div>
 
-        {/* Results Section */}
-        <div className="bg-white rounded-xl shadow p-6">
-          <h2 className="text-lg font-semibold mb-4">Results</h2>
-
-          {results.length === 0 ? (
-            <p className="text-slate-500 text-sm">
-              No predictions yet. Upload images and click <b>Recognize</b>.
-            </p>
-          ) : (
-            <div className="space-y-4">
-              {results.map((r, index) => (
-                <div
-                  key={index}
-                  className="border rounded-lg p-4 bg-slate-50"
-                >
-                  <p className="text-sm text-slate-500 truncate">{r.name}</p>
-
-                  <div className="mt-2 text-lg font-medium text-slate-900 whitespace-pre-wrap break-words">
-                    {r.text || <span className="text-slate-400">—</span>}
-                  </div>
-
-                  <div className="mt-3">
-                    <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-                      <div
-                        className="h-2 bg-slate-900"
-                        style={{
-                          width: `${Math.max(0, Math.min(1, r.confidence)) * 100}%`,
-                        }}
-                      />
-                    </div>
-                    <p className="text-xs text-slate-600 mt-1">
-                      Confidence: {(Math.max(0, Math.min(1, r.confidence)) * 100).toFixed(1)}%
-                    </p>
-                  </div>
-                </div>
-              ))}
+          <div className="glass-card rise-in-delay rounded-3xl p-5 sm:p-6">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-white sm:text-xl">Results</h2>
+              {results.length > 0 && (
+                <p className="text-xs text-slate-300 sm:text-sm">
+                  Avg confidence: {(averageConfidence * 100).toFixed(1)}%
+                </p>
+              )}
             </div>
-          )}
-        </div>
 
-        <div className="mt-8 text-center text-xs text-slate-500">
-          FastAPI + React (Vite) • Sinhala HTR Prototype
-        </div>
-      </div>
+            {errorMessage && (
+              <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-200/10 p-3 text-sm text-amber-100">
+                {errorMessage}
+              </div>
+            )}
+
+            {results.length === 0 ? (
+              <p className="mt-6 text-sm text-slate-300">
+                No predictions yet. Upload images and run recognition.
+              </p>
+            ) : (
+              <div className="mt-4 space-y-3">
+                {results.map((result) => (
+                  <article
+                    key={result.key}
+                    className="rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <p className="truncate text-xs uppercase tracking-wide text-slate-400">
+                        {result.name}
+                      </p>
+                      <button
+                        onClick={() => copyText(result.text, result.key)}
+                        disabled={!result.text}
+                        className={`rounded-lg border px-2 py-1 text-xs transition ${
+                          result.text
+                            ? "border-cyan-300/70 text-cyan-100 hover:bg-cyan-300/15"
+                            : "cursor-not-allowed border-slate-700 text-slate-500"
+                        }`}
+                      >
+                        {copiedKey === result.key ? "Copied" : "Copy text"}
+                      </button>
+                    </div>
+
+                    <p className="mt-2 whitespace-pre-wrap break-words text-base text-white">
+                      {result.text || <span className="text-slate-500">-</span>}
+                    </p>
+
+                    <div className="mt-3">
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-700/70">
+                        <div
+                          className={`confidence-fill h-full ${result.error ? "bg-rose-400" : "bg-cyan-300"}`}
+                          style={{ width: `${clamp01(result.confidence) * 100}%` }}
+                        />
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-xs text-slate-400">
+                        <span>Confidence {(clamp01(result.confidence) * 100).toFixed(1)}%</span>
+                        {result.error && <span className="text-rose-300">Invalid image</span>}
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <p className="mt-6 text-center text-xs text-slate-400">
+          FastAPI + React (Vite) | Sinhala HTR prototype
+        </p>
+      </main>
     </div>
   );
 }
