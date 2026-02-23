@@ -69,6 +69,9 @@ export default function App() {
   const [theme, setTheme] = useState(getInitialTheme);
   const [apiOnline, setApiOnline] = useState(false);
   const [checkingApi, setCheckingApi] = useState(true);
+  const [modelConnected, setModelConnected] = useState(false);
+  const [modelMessage, setModelMessage] = useState("Please connect with model.");
+  const [modelPath, setModelPath] = useState("");
   const [dragActive, setDragActive] = useState(false);
   const [files, setFiles] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -90,10 +93,23 @@ export default function App() {
 
     async function checkHealth() {
       try {
-        await axios.get(`${API_BASE}/health`, { timeout: HEALTH_CHECK_TIMEOUT_MS });
-        if (active) setApiOnline(true);
+        const response = await axios.get(`${API_BASE}/health`, { timeout: HEALTH_CHECK_TIMEOUT_MS });
+        if (active) {
+          const connected = Boolean(response?.data?.model_connected);
+          setApiOnline(true);
+          setModelConnected(connected);
+          setModelMessage(
+            response?.data?.message || (connected ? "Model connected." : "Please connect with model.")
+          );
+          setModelPath(response?.data?.model_path || "");
+        }
       } catch {
-        if (active) setApiOnline(false);
+        if (active) {
+          setApiOnline(false);
+          setModelConnected(false);
+          setModelMessage("Please connect with model.");
+          setModelPath("");
+        }
       } finally {
         if (active) setCheckingApi(false);
       }
@@ -234,7 +250,7 @@ export default function App() {
   }
 
   async function handleRecognize() {
-    if (!files.length || loading || !apiOnline) return;
+    if (!files.length || loading || !apiOnline || !modelConnected) return;
 
     setLoading(true);
     setResults([]);
@@ -281,7 +297,8 @@ export default function App() {
       }
     } catch (error) {
       console.error(error);
-      setErrorMessage("Prediction failed. Check backend logs and API URL.");
+      const detail = error?.response?.data?.detail;
+      setErrorMessage(typeof detail === "string" ? detail : "Prediction failed. Check backend logs and API URL.");
       setResults(
         files.map((file, index) => ({
           key: `${fileId(file)}-${index}`,
@@ -373,12 +390,20 @@ export default function App() {
     downloadTextFile("htr-results.csv", csv, "text/csv;charset=utf-8");
   }
 
-  const statusLabel = checkingApi ? "Checking API" : apiOnline ? "API online" : "API offline";
+  const statusLabel = checkingApi
+    ? "Checking API"
+    : !apiOnline
+      ? "API offline"
+      : modelConnected
+        ? "API online + model connected"
+        : "API online | model missing";
   const statusColor = checkingApi
     ? "bg-amber-300"
-    : apiOnline
+    : !apiOnline
+      ? "bg-rose-400"
+      : modelConnected
       ? "bg-emerald-400"
-      : "bg-rose-400";
+      : "bg-amber-300";
 
   return (
     <div className={`app-shell min-h-screen ${theme === "light" ? "theme-light" : "theme-dark"}`}>
@@ -469,9 +494,9 @@ export default function App() {
 
                 <button
                   onClick={handleRecognize}
-                  disabled={!files.length || loading || !apiOnline}
+                  disabled={!files.length || loading || !apiOnline || !modelConnected}
                   className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                    !files.length || loading || !apiOnline
+                    !files.length || loading || !apiOnline || !modelConnected
                       ? "cursor-not-allowed bg-slate-700/50 text-slate-400"
                       : "bg-emerald-500/90 text-emerald-950 hover:bg-emerald-400"
                   }`}
@@ -491,6 +516,18 @@ export default function App() {
                   Clear
                 </button>
               </div>
+
+              {apiOnline && !modelConnected && (
+                <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-200/10 p-3 text-sm text-amber-100">
+                  {modelMessage} Put your model file in <b>backend/models/</b> or set <b>MODEL_PATH</b>.
+                </div>
+              )}
+
+              {apiOnline && modelConnected && modelPath && (
+                <p className="mt-3 text-xs text-slate-300">
+                  Active model: <span className="font-medium">{modelPath}</span>
+                </p>
+              )}
 
               {loading && (
                 <div className="mt-4 overflow-hidden rounded-lg bg-slate-900/50">

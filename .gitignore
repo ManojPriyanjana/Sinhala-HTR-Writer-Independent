@@ -27,6 +27,9 @@ report/figures/
 backend/venv/
 backend/__pycache__/
 frontend/node_modules/
+backend/models/*
+!backend/models/.gitkeep
+!backend/models/README.md
 
 
 node_modules/
