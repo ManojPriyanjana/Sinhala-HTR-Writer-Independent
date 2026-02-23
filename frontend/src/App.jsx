@@ -64,6 +64,28 @@ function getInitialTheme() {
   return stored === "light" || stored === "dark" ? stored : "dark";
 }
 
+function getLineCount(text) {
+  if (!text) return 0;
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean).length;
+}
+
+function getWordCount(text) {
+  if (!text) return 0;
+  return text
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean).length;
+}
+
+function isParagraphLikeResult(result) {
+  const lines = getLineCount(result?.text || "");
+  const longText = (result?.text || "").length >= 220;
+  return Number(result?.detectedLines || 0) > 1 || lines >= 3 || longText;
+}
+
 export default function App() {
   const inputRef = useRef(null);
   const [theme, setTheme] = useState(getInitialTheme);
@@ -81,6 +103,10 @@ export default function App() {
   const [copiedAll, setCopiedAll] = useState(false);
   const [resultQuery, setResultQuery] = useState("");
   const [sortMode, setSortMode] = useState("default");
+  const [layoutMode, setLayoutMode] = useState("reader");
+  const [textSizeMode, setTextSizeMode] = useState("comfortable");
+  const [activePreviewKey, setActivePreviewKey] = useState("");
+  const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
   const [editingByKey, setEditingByKey] = useState({});
   const [draftByKey, setDraftByKey] = useState({});
 
@@ -136,11 +162,42 @@ export default function App() {
     };
   }, [fileCards]);
 
+  useEffect(() => {
+    if (!fileCards.length) {
+      setActivePreviewKey("");
+      setIsPreviewExpanded(false);
+      return;
+    }
+
+    const exists = fileCards.some((card) => card.key === activePreviewKey);
+    if (!exists) {
+      setActivePreviewKey(fileCards[0].key);
+    }
+  }, [fileCards, activePreviewKey]);
+
+  useEffect(() => {
+    if (!isPreviewExpanded) return undefined;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        setIsPreviewExpanded(false);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isPreviewExpanded]);
+
   const previewByKey = useMemo(() => {
     const map = new Map();
     fileCards.forEach((card) => map.set(card.key, card.previewUrl));
     return map;
   }, [fileCards]);
+
+  const activePreviewCard = useMemo(() => {
+    if (!fileCards.length) return null;
+    return fileCards.find((card) => card.key === activePreviewKey) || fileCards[0];
+  }, [fileCards, activePreviewKey]);
 
   const averageConfidence = useMemo(() => {
     if (!results.length) return 0;
@@ -172,6 +229,18 @@ export default function App() {
 
     return rows;
   }, [results, resultQuery, sortMode]);
+
+  const paragraphResultCount = useMemo(
+    () => visibleResults.filter((result) => isParagraphLikeResult(result)).length,
+    [visibleResults]
+  );
+
+  const readerTextClass =
+    textSizeMode === "compact"
+      ? "text-sm leading-7"
+      : textSizeMode === "large"
+        ? "text-[1.12rem] leading-9"
+        : "text-base leading-8";
 
   function resetResultViews() {
     setResults([]);
@@ -221,6 +290,8 @@ export default function App() {
 
   function clearAll() {
     setFiles([]);
+    setActivePreviewKey("");
+    setIsPreviewExpanded(false);
     resetResultViews();
     if (inputRef.current) inputRef.current.value = "";
   }
@@ -288,6 +359,9 @@ export default function App() {
           edited: false,
           confidence: clamp01(item?.confidence),
           error: Boolean(item?.error),
+          detectedLines: Number(item?.meta?.detected_lines || 0),
+          sourceImageWidth: Number(item?.meta?.width || 0),
+          sourceImageHeight: Number(item?.meta?.height || 0),
         };
       });
 
@@ -310,6 +384,9 @@ export default function App() {
           edited: false,
           confidence: 0,
           error: true,
+          detectedLines: 0,
+          sourceImageWidth: 0,
+          sourceImageHeight: 0,
         }))
       );
     } finally {
@@ -407,7 +484,7 @@ export default function App() {
 
   return (
     <div className={`app-shell min-h-screen ${theme === "light" ? "theme-light" : "theme-dark"}`}>
-      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
+      <main className="mx-auto max-w-[92rem] px-4 py-8 sm:px-6 lg:px-8">
         <section className="glass-card rise-in rounded-3xl p-6 sm:p-8">
           <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -418,7 +495,7 @@ export default function App() {
                 Sinhala Handwriting Demo
               </h1>
               <p className="mt-3 max-w-2xl text-sm text-slate-300 sm:text-base">
-                Upload segmented line images and run recognition in one batch request.
+                Upload line or full-page handwriting images and run recognition in one batch request.
               </p>
             </div>
 
@@ -455,10 +532,10 @@ export default function App() {
           </div>
         </section>
 
-        <section className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+        <section className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1.1fr]">
           <div className="glass-card rise-in-delay rounded-3xl p-5 sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
-              <h2 className="text-lg font-semibold text-white sm:text-xl">Upload Line Images</h2>
+              <h2 className="text-lg font-semibold text-white sm:text-xl">Upload Handwriting Images</h2>
               <p className="text-xs text-slate-300 sm:text-sm">
                 {files.length ? `${files.length} files | ${formatBytes(totalBytes)}` : "No files selected"}
               </p>
@@ -535,6 +612,33 @@ export default function App() {
                 </div>
               )}
 
+              {activePreviewCard && (
+                <div className="mt-5">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Active preview</p>
+                    <p className="truncate text-xs text-slate-400">{activePreviewCard.file.name}</p>
+                  </div>
+                  <div className="mt-2 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-900/55">
+                    <img
+                      src={activePreviewCard.previewUrl}
+                      alt={activePreviewCard.file.name}
+                      onClick={() => setIsPreviewExpanded(true)}
+                      className="h-[22rem] w-full cursor-zoom-in bg-slate-900/60 p-2 object-contain sm:h-[28rem] lg:h-[32rem]"
+                      loading="lazy"
+                    />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <p className="text-xs text-slate-400">{formatBytes(activePreviewCard.file.size)}</p>
+                    <button
+                      onClick={() => setIsPreviewExpanded(true)}
+                      className="rounded-lg border border-cyan-300/70 bg-cyan-300/10 px-2.5 py-1 text-xs text-cyan-100 transition hover:bg-cyan-300/20"
+                    >
+                      Full view
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {fileCards.length > 0 && (
                 <div className="mt-5">
                   <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Selected files</p>
@@ -542,12 +646,17 @@ export default function App() {
                     {fileCards.slice(0, FILE_PREVIEW_LIMIT).map((card) => (
                       <li
                         key={card.key}
-                        className="flex items-center gap-3 rounded-xl border border-slate-700/80 bg-slate-900/50 px-3 py-2"
+                        onClick={() => setActivePreviewKey(card.key)}
+                        className={`flex cursor-pointer items-center gap-3 rounded-xl border bg-slate-900/50 px-3 py-2 transition ${
+                          activePreviewCard?.key === card.key
+                            ? "border-cyan-300/70 ring-1 ring-cyan-300/50"
+                            : "border-slate-700/80 hover:border-cyan-300/45"
+                        }`}
                       >
                         <img
                           src={card.previewUrl}
                           alt={card.file.name}
-                          className="h-12 w-12 flex-none rounded-md border border-slate-700 object-cover"
+                          className="h-16 w-16 flex-none rounded-md border border-slate-700 bg-slate-900/50 p-1 object-contain"
                           loading="lazy"
                         />
                         <div className="min-w-0 flex-1">
@@ -555,7 +664,10 @@ export default function App() {
                           <p className="text-xs text-slate-400">{formatBytes(card.file.size)}</p>
                         </div>
                         <button
-                          onClick={() => handleRemoveFile(card.key)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleRemoveFile(card.key);
+                          }}
                           className="rounded-lg border border-rose-300/50 px-2 py-1 text-xs text-rose-200 transition hover:bg-rose-400/10"
                         >
                           Remove
@@ -578,6 +690,11 @@ export default function App() {
                 {results.length > 0 && (
                   <p className="text-xs text-slate-300 sm:text-sm">
                     Avg confidence: {(averageConfidence * 100).toFixed(1)}%
+                  </p>
+                )}
+                {paragraphResultCount > 0 && (
+                  <p className="mt-1 text-xs text-cyan-200">
+                    Reader-optimized results: {paragraphResultCount}
                   </p>
                 )}
               </div>
@@ -619,7 +736,7 @@ export default function App() {
             </div>
 
             {results.length > 0 && (
-              <div className="mt-4 grid gap-2 sm:grid-cols-2">
+              <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 <input
                   value={resultQuery}
                   onChange={(event) => setResultQuery(event.target.value)}
@@ -634,6 +751,23 @@ export default function App() {
                   <option value="default">Sort: Upload order</option>
                   <option value="confidence">Sort: Confidence</option>
                   <option value="name">Sort: Name</option>
+                </select>
+                <select
+                  value={layoutMode}
+                  onChange={(event) => setLayoutMode(event.target.value)}
+                  className="w-full rounded-xl border border-slate-600/80 bg-slate-900/55 px-3 py-2 text-sm text-white outline-none ring-cyan-300 focus:ring-1"
+                >
+                  <option value="reader">Layout: Reader</option>
+                  <option value="compact">Layout: Compact</option>
+                </select>
+                <select
+                  value={textSizeMode}
+                  onChange={(event) => setTextSizeMode(event.target.value)}
+                  className="w-full rounded-xl border border-slate-600/80 bg-slate-900/55 px-3 py-2 text-sm text-white outline-none ring-cyan-300 focus:ring-1"
+                >
+                  <option value="comfortable">Text: Comfortable</option>
+                  <option value="large">Text: Large</option>
+                  <option value="compact">Text: Compact</option>
                 </select>
               </div>
             )}
@@ -653,11 +787,20 @@ export default function App() {
                 {visibleResults.map((result) => {
                   const isEditing = Boolean(editingByKey[result.key]);
                   const draftText = draftByKey[result.key] ?? result.text;
+                  const paragraphLike = isParagraphLikeResult(result);
+                  const lineCount = getLineCount(result.text);
+                  const wordCount = getWordCount(result.text);
+                  const transcriptClass =
+                    layoutMode === "reader" && paragraphLike
+                      ? `sinhala-reader ${readerTextClass}`
+                      : "text-base leading-7";
 
                   return (
                     <article
                       key={result.key}
-                      className="rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4"
+                      className={`rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4 ${
+                        layoutMode === "reader" && paragraphLike ? "result-card-reader" : ""
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -665,6 +808,23 @@ export default function App() {
                           {result.sourceFileName && (
                             <p className="truncate text-xs text-slate-500">{result.sourceFileName}</p>
                           )}
+                          <div className="mt-1 flex flex-wrap gap-1.5">
+                            {lineCount > 0 && (
+                              <span className="rounded-full border border-slate-500/70 px-2 py-0.5 text-[11px] text-slate-300">
+                                {lineCount} lines
+                              </span>
+                            )}
+                            {wordCount > 0 && (
+                              <span className="rounded-full border border-slate-500/70 px-2 py-0.5 text-[11px] text-slate-300">
+                                {wordCount} words
+                              </span>
+                            )}
+                            {result.detectedLines > 1 && (
+                              <span className="rounded-full border border-cyan-300/70 bg-cyan-300/10 px-2 py-0.5 text-[11px] text-cyan-100">
+                                Segmented: {result.detectedLines}
+                              </span>
+                            )}
+                          </div>
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
@@ -712,12 +872,14 @@ export default function App() {
                         </div>
                       </div>
 
-                      <div className="mt-3 flex items-start gap-3">
+                      <div className={`mt-3 flex items-start gap-3 ${layoutMode === "reader" && paragraphLike ? "md:gap-4" : ""}`}>
                         {result.sourceFileKey && previewByKey.get(result.sourceFileKey) && (
                           <img
                             src={previewByKey.get(result.sourceFileKey)}
                             alt={result.sourceFileName || result.name}
-                            className="h-16 w-16 rounded-lg border border-slate-700 object-cover"
+                            className={`rounded-lg border border-slate-700 bg-slate-900/50 p-1 object-contain ${
+                              layoutMode === "reader" && paragraphLike ? "h-24 w-24" : "h-20 w-20"
+                            }`}
                             loading="lazy"
                           />
                         )}
@@ -734,7 +896,7 @@ export default function App() {
                               placeholder="Edit recognized text"
                             />
                           ) : (
-                            <p className="min-w-0 whitespace-pre-wrap break-words text-base text-white">
+                            <p className={`min-w-0 whitespace-pre-wrap break-words text-white ${transcriptClass}`}>
                               {result.text || <span className="text-slate-500">-</span>}
                             </p>
                           )}
@@ -763,6 +925,31 @@ export default function App() {
 
         <p className="mt-6 text-center text-xs text-slate-400">FastAPI + React (Vite) | Sinhala HTR prototype</p>
       </main>
+
+      {isPreviewExpanded && activePreviewCard && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm"
+          onClick={() => setIsPreviewExpanded(false)}
+        >
+          <div
+            className="relative max-h-[94vh] w-[min(96vw,96rem)] overflow-hidden rounded-2xl border border-slate-500/70 bg-slate-900/90 p-3"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              onClick={() => setIsPreviewExpanded(false)}
+              className="absolute right-3 top-3 rounded-lg border border-slate-500/70 bg-slate-900/70 px-2.5 py-1 text-xs text-slate-200 transition hover:bg-slate-800"
+            >
+              Close
+            </button>
+            <p className="mb-2 truncate pr-16 text-xs text-slate-300">{activePreviewCard.file.name}</p>
+            <img
+              src={activePreviewCard.previewUrl}
+              alt={activePreviewCard.file.name}
+              className="max-h-[86vh] w-full rounded-xl bg-slate-900/70 object-contain"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
