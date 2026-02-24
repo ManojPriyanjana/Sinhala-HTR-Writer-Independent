@@ -7,6 +7,7 @@ const HEALTH_CHECK_TIMEOUT_MS = 1500;
 const PREDICT_TIMEOUT_MS = 90000;
 const FILE_PREVIEW_LIMIT = 12;
 const THEME_STORAGE_KEY = "htr-theme";
+const MIN_CROP_PERCENT = 10;
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
@@ -86,6 +87,32 @@ function isParagraphLikeResult(result) {
   return Number(result?.detectedLines || 0) > 1 || lines >= 3 || longText;
 }
 
+function clampNumber(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function normalizeCropMargins(left, right, top, bottom) {
+  const maxMargin = 100 - MIN_CROP_PERCENT;
+  let nextLeft = clampNumber(left, 0, maxMargin);
+  let nextRight = clampNumber(right, 0, maxMargin);
+  let nextTop = clampNumber(top, 0, maxMargin);
+  let nextBottom = clampNumber(bottom, 0, maxMargin);
+
+  if (nextLeft + nextRight > maxMargin) {
+    nextRight = Math.max(0, maxMargin - nextLeft);
+  }
+  if (nextTop + nextBottom > maxMargin) {
+    nextBottom = Math.max(0, maxMargin - nextTop);
+  }
+
+  return {
+    left: nextLeft,
+    right: nextRight,
+    top: nextTop,
+    bottom: nextBottom,
+  };
+}
+
 export default function App() {
   const inputRef = useRef(null);
   const [theme, setTheme] = useState(getInitialTheme);
@@ -107,6 +134,19 @@ export default function App() {
   const [textSizeMode, setTextSizeMode] = useState("comfortable");
   const [activePreviewKey, setActivePreviewKey] = useState("");
   const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
+  const [cropDialog, setCropDialog] = useState({
+    open: false,
+    sourceKey: "",
+    sourceName: "",
+    previewUrl: "",
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    imageWidth: 0,
+    imageHeight: 0,
+    processing: false,
+  });
   const [editingByKey, setEditingByKey] = useState({});
   const [draftByKey, setDraftByKey] = useState({});
 
@@ -188,6 +228,19 @@ export default function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isPreviewExpanded]);
 
+  useEffect(() => {
+    if (!cropDialog.open) return undefined;
+
+    function handleKeyDown(event) {
+      if (event.key === "Escape" && !cropDialog.processing) {
+        setCropDialog((prev) => ({ ...prev, open: false }));
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [cropDialog.open, cropDialog.processing]);
+
   const previewByKey = useMemo(() => {
     const map = new Map();
     fileCards.forEach((card) => map.set(card.key, card.previewUrl));
@@ -234,6 +287,35 @@ export default function App() {
     () => visibleResults.filter((result) => isParagraphLikeResult(result)).length,
     [visibleResults]
   );
+
+  const cropMetrics = useMemo(() => {
+    if (!cropDialog.imageWidth || !cropDialog.imageHeight) {
+      return {
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        widthPct: 100 - cropDialog.left - cropDialog.right,
+        heightPct: 100 - cropDialog.top - cropDialog.bottom,
+      };
+    }
+
+    const widthPct = Math.max(MIN_CROP_PERCENT, 100 - cropDialog.left - cropDialog.right);
+    const heightPct = Math.max(MIN_CROP_PERCENT, 100 - cropDialog.top - cropDialog.bottom);
+    const x = Math.round((cropDialog.left / 100) * cropDialog.imageWidth);
+    const y = Math.round((cropDialog.top / 100) * cropDialog.imageHeight);
+    const width = Math.max(1, Math.round((widthPct / 100) * cropDialog.imageWidth));
+    const height = Math.max(1, Math.round((heightPct / 100) * cropDialog.imageHeight));
+
+    return {
+      x,
+      y,
+      width,
+      height,
+      widthPct,
+      heightPct,
+    };
+  }, [cropDialog]);
 
   const readerTextClass =
     textSizeMode === "compact"
@@ -292,6 +374,7 @@ export default function App() {
     setFiles([]);
     setActivePreviewKey("");
     setIsPreviewExpanded(false);
+    setCropDialog((prev) => ({ ...prev, open: false, processing: false }));
     resetResultViews();
     if (inputRef.current) inputRef.current.value = "";
   }
@@ -318,6 +401,109 @@ export default function App() {
     setDragActive(false);
     const dropped = Array.from(event.dataTransfer.files || []);
     appendFiles(dropped);
+  }
+
+  function openCropDialog() {
+    if (!activePreviewCard) return;
+    setCropDialog({
+      open: true,
+      sourceKey: activePreviewCard.key,
+      sourceName: activePreviewCard.file.name,
+      previewUrl: activePreviewCard.previewUrl,
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      imageWidth: 0,
+      imageHeight: 0,
+      processing: false,
+    });
+  }
+
+  function updateCropMargin(edge, value) {
+    const numeric = Number(value);
+    setCropDialog((prev) => {
+      const draft = {
+        left: prev.left,
+        right: prev.right,
+        top: prev.top,
+        bottom: prev.bottom,
+      };
+      draft[edge] = Number.isFinite(numeric) ? numeric : draft[edge];
+      const normalized = normalizeCropMargins(draft.left, draft.right, draft.top, draft.bottom);
+      return { ...prev, ...normalized };
+    });
+  }
+
+  async function applyCropToFile() {
+    if (!cropDialog.open || cropDialog.processing) return;
+
+    const sourceFile = files.find((file) => fileId(file) === cropDialog.sourceKey);
+    if (!sourceFile) {
+      setCropDialog((prev) => ({ ...prev, open: false, processing: false }));
+      return;
+    }
+
+    setCropDialog((prev) => ({ ...prev, processing: true }));
+
+    try {
+      const img = new Image();
+      const loaded = new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+      });
+      img.src = cropDialog.previewUrl;
+      await loaded;
+
+      const canvas = document.createElement("canvas");
+      canvas.width = cropMetrics.width;
+      canvas.height = cropMetrics.height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        throw new Error("Could not create crop canvas context.");
+      }
+
+      ctx.drawImage(
+        img,
+        cropMetrics.x,
+        cropMetrics.y,
+        cropMetrics.width,
+        cropMetrics.height,
+        0,
+        0,
+        cropMetrics.width,
+        cropMetrics.height
+      );
+
+      const outputType =
+        sourceFile.type && sourceFile.type.startsWith("image/") ? sourceFile.type : "image/jpeg";
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob(
+          (value) => (value ? resolve(value) : reject(new Error("Image crop failed."))),
+          outputType,
+          0.95
+        );
+      });
+
+      const extMatch = sourceFile.name.match(/\.[^.]+$/);
+      const ext = extMatch ? extMatch[0] : outputType === "image/png" ? ".png" : ".jpg";
+      const stem = sourceFile.name.replace(/\.[^.]+$/, "");
+      const croppedFile = new File([blob], `${stem}-cropped${ext}`, {
+        type: outputType,
+        lastModified: Date.now(),
+      });
+
+      setFiles((prev) =>
+        prev.map((file) => (fileId(file) === cropDialog.sourceKey ? croppedFile : file))
+      );
+      setActivePreviewKey(fileId(croppedFile));
+      setCropDialog((prev) => ({ ...prev, open: false, processing: false }));
+      resetResultViews();
+    } catch (error) {
+      console.error(error);
+      setErrorMessage("Image crop failed. Please try again.");
+      setCropDialog((prev) => ({ ...prev, processing: false }));
+    }
   }
 
   async function handleRecognize() {
@@ -532,7 +718,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1.1fr]">
+        <section className="mt-6 grid gap-6 lg:grid-cols-[1.35fr_1.05fr]">
           <div className="glass-card rise-in-delay rounded-3xl p-5 sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <h2 className="text-lg font-semibold text-white sm:text-xl">Upload Handwriting Images</h2>
@@ -623,18 +809,26 @@ export default function App() {
                       src={activePreviewCard.previewUrl}
                       alt={activePreviewCard.file.name}
                       onClick={() => setIsPreviewExpanded(true)}
-                      className="h-[22rem] w-full cursor-zoom-in bg-slate-900/60 p-2 object-contain sm:h-[28rem] lg:h-[32rem]"
+                      className="h-[26rem] w-full cursor-zoom-in bg-slate-900/60 p-2 object-contain sm:h-[34rem] lg:h-[40rem]"
                       loading="lazy"
                     />
                   </div>
                   <div className="mt-2 flex items-center justify-between gap-3">
                     <p className="text-xs text-slate-400">{formatBytes(activePreviewCard.file.size)}</p>
-                    <button
-                      onClick={() => setIsPreviewExpanded(true)}
-                      className="rounded-lg border border-cyan-300/70 bg-cyan-300/10 px-2.5 py-1 text-xs text-cyan-100 transition hover:bg-cyan-300/20"
-                    >
-                      Full view
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={openCropDialog}
+                        className="rounded-lg border border-emerald-300/70 bg-emerald-300/10 px-2.5 py-1 text-xs text-emerald-100 transition hover:bg-emerald-300/20"
+                      >
+                        Crop image
+                      </button>
+                      <button
+                        onClick={() => setIsPreviewExpanded(true)}
+                        className="rounded-lg border border-cyan-300/70 bg-cyan-300/10 px-2.5 py-1 text-xs text-cyan-100 transition hover:bg-cyan-300/20"
+                      >
+                        Full view
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -947,6 +1141,178 @@ export default function App() {
               alt={activePreviewCard.file.name}
               className="max-h-[86vh] w-full rounded-xl bg-slate-900/70 object-contain"
             />
+          </div>
+        </div>
+      )}
+
+      {cropDialog.open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 p-3 backdrop-blur-sm"
+          onClick={() => {
+            if (!cropDialog.processing) {
+              setCropDialog((prev) => ({ ...prev, open: false }));
+            }
+          }}
+        >
+          <div
+            className="relative max-h-[96vh] w-[min(96vw,88rem)] overflow-auto rounded-2xl border border-slate-500/70 bg-slate-900/95 p-4"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-cyan-200">Crop Image</p>
+                <p className="mt-1 max-w-[60ch] text-xs text-slate-300">
+                  Remove unwanted borders or regions before recognition. Keep only handwriting area.
+                </p>
+                <p className="mt-1 truncate text-xs text-slate-400">{cropDialog.sourceName}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() =>
+                    setCropDialog((prev) => ({
+                      ...prev,
+                      ...normalizeCropMargins(0, 0, 0, 0),
+                    }))
+                  }
+                  disabled={cropDialog.processing}
+                  className="rounded-lg border border-slate-500/80 px-2.5 py-1 text-xs text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={() =>
+                    !cropDialog.processing &&
+                    setCropDialog((prev) => ({ ...prev, open: false, processing: false }))
+                  }
+                  disabled={cropDialog.processing}
+                  className="rounded-lg border border-slate-500/80 px-2.5 py-1 text-xs text-slate-200 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applyCropToFile}
+                  disabled={cropDialog.processing}
+                  className="rounded-lg border border-emerald-300/70 bg-emerald-300/10 px-3 py-1 text-xs text-emerald-100 transition hover:bg-emerald-300/20 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {cropDialog.processing ? "Applying..." : "Apply crop"}
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[1.45fr_1fr]">
+              <div className="overflow-hidden rounded-xl border border-slate-700/80 bg-slate-900/70 p-2">
+                <div className="relative mx-auto w-fit">
+                  <img
+                    src={cropDialog.previewUrl}
+                    alt={cropDialog.sourceName}
+                    onLoad={(event) => {
+                      const { naturalWidth, naturalHeight } = event.currentTarget;
+                      setCropDialog((prev) => ({
+                        ...prev,
+                        imageWidth: naturalWidth || prev.imageWidth,
+                        imageHeight: naturalHeight || prev.imageHeight,
+                      }));
+                    }}
+                    className="block max-h-[68vh] w-auto max-w-full rounded-lg object-contain"
+                  />
+
+                  <div
+                    className="pointer-events-none absolute left-0 top-0 bg-black/45"
+                    style={{ width: "100%", height: `${cropDialog.top}%` }}
+                  />
+                  <div
+                    className="pointer-events-none absolute bottom-0 left-0 bg-black/45"
+                    style={{ width: "100%", height: `${cropDialog.bottom}%` }}
+                  />
+                  <div
+                    className="pointer-events-none absolute bg-black/45"
+                    style={{
+                      left: 0,
+                      top: `${cropDialog.top}%`,
+                      width: `${cropDialog.left}%`,
+                      height: `${Math.max(0, 100 - cropDialog.top - cropDialog.bottom)}%`,
+                    }}
+                  />
+                  <div
+                    className="pointer-events-none absolute bg-black/45"
+                    style={{
+                      right: 0,
+                      top: `${cropDialog.top}%`,
+                      width: `${cropDialog.right}%`,
+                      height: `${Math.max(0, 100 - cropDialog.top - cropDialog.bottom)}%`,
+                    }}
+                  />
+                  <div
+                    className="pointer-events-none absolute rounded-lg border-2 border-cyan-300/90 shadow-[0_0_0_1px_rgba(15,23,42,0.75)]"
+                    style={{
+                      left: `${cropDialog.left}%`,
+                      top: `${cropDialog.top}%`,
+                      width: `${Math.max(MIN_CROP_PERCENT, 100 - cropDialog.left - cropDialog.right)}%`,
+                      height: `${Math.max(MIN_CROP_PERCENT, 100 - cropDialog.top - cropDialog.bottom)}%`,
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-slate-700/80 bg-slate-900/70 p-3">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">Crop Controls</p>
+                <div className="mt-3 space-y-3">
+                  <label className="block text-xs text-slate-300">
+                    Left margin: {cropDialog.left.toFixed(0)}%
+                    <input
+                      type="range"
+                      min="0"
+                      max={100 - MIN_CROP_PERCENT}
+                      value={cropDialog.left}
+                      onChange={(event) => updateCropMargin("left", event.target.value)}
+                      className="mt-1 w-full accent-cyan-300"
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-300">
+                    Right margin: {cropDialog.right.toFixed(0)}%
+                    <input
+                      type="range"
+                      min="0"
+                      max={100 - MIN_CROP_PERCENT}
+                      value={cropDialog.right}
+                      onChange={(event) => updateCropMargin("right", event.target.value)}
+                      className="mt-1 w-full accent-cyan-300"
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-300">
+                    Top margin: {cropDialog.top.toFixed(0)}%
+                    <input
+                      type="range"
+                      min="0"
+                      max={100 - MIN_CROP_PERCENT}
+                      value={cropDialog.top}
+                      onChange={(event) => updateCropMargin("top", event.target.value)}
+                      className="mt-1 w-full accent-cyan-300"
+                    />
+                  </label>
+                  <label className="block text-xs text-slate-300">
+                    Bottom margin: {cropDialog.bottom.toFixed(0)}%
+                    <input
+                      type="range"
+                      min="0"
+                      max={100 - MIN_CROP_PERCENT}
+                      value={cropDialog.bottom}
+                      onChange={(event) => updateCropMargin("bottom", event.target.value)}
+                      className="mt-1 w-full accent-cyan-300"
+                    />
+                  </label>
+                </div>
+
+                <div className="mt-4 rounded-lg border border-slate-600/70 bg-slate-900/60 p-2 text-xs text-slate-300">
+                  <p>
+                    Crop area: {Math.round(cropMetrics.widthPct)}% x {Math.round(cropMetrics.heightPct)}%
+                  </p>
+                  <p className="mt-1">
+                    Output size: {cropMetrics.width} x {cropMetrics.height}px
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
