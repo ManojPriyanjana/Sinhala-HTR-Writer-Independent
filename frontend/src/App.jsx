@@ -11,7 +11,10 @@ const MIN_CROP_PERCENT = 10;
 const CANVAS_WIDTH = 1200;
 const CANVAS_HEIGHT = 260;
 const CANVAS_UNDO_LIMIT = 40;
-const CANVAS_BRUSH_SIZE = 8;
+const CANVAS_BRUSH_SIZE = 1.4;
+const CANVAS_PEN_MIN_SIZE = 0.8;
+const CANVAS_PEN_MAX_SIZE = 2.2;
+const CANVAS_PEN_PRESSURE_GAMMA = 1.35;
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
@@ -131,6 +134,30 @@ function canvasHasInk(ctx, width, height) {
     }
   }
   return false;
+}
+
+function getCanvasStrokeWidth(event) {
+  if (event.pointerType === "pen") {
+    const pressure = clamp01(event.pressure || 0.5);
+    const curvedPressure = pressure ** CANVAS_PEN_PRESSURE_GAMMA;
+    return CANVAS_PEN_MIN_SIZE + curvedPressure * (CANVAS_PEN_MAX_SIZE - CANVAS_PEN_MIN_SIZE);
+  }
+  if (event.pointerType === "touch") {
+    return CANVAS_BRUSH_SIZE + 0.2;
+  }
+  return CANVAS_BRUSH_SIZE;
+}
+
+function applyCanvasStrokeStyle(ctx, event) {
+  if (event.pointerType === "pen") {
+    ctx.lineCap = "butt";
+    ctx.lineJoin = "miter";
+    ctx.miterLimit = 2;
+    return;
+  }
+
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
 }
 
 export default function App() {
@@ -477,6 +504,8 @@ export default function App() {
     canvas.setPointerCapture(event.pointerId);
     canvasIsDrawingRef.current = true;
     lastPointRef.current = point;
+    applyCanvasStrokeStyle(ctx, event);
+    ctx.lineWidth = getCanvasStrokeWidth(event);
     ctx.beginPath();
     ctx.moveTo(point.x, point.y);
     setCanvasVersion((prev) => prev + 1);
@@ -491,6 +520,8 @@ export default function App() {
     if (!ctx || !point) return;
 
     const lastPoint = lastPointRef.current;
+    applyCanvasStrokeStyle(ctx, event);
+    ctx.lineWidth = getCanvasStrokeWidth(event);
     ctx.beginPath();
     ctx.moveTo(lastPoint.x, lastPoint.y);
     ctx.lineTo(point.x, point.y);
