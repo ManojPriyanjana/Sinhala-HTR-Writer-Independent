@@ -41,6 +41,8 @@ SEGMENT_HEIGHT_TRIGGER = 140
 CANVAS_MIN_INK_PIXELS = 50
 CANVAS_PAD_X_RATIO = 0.06
 CANVAS_PAD_Y_RATIO = 0.45
+CANVAS_MAX_DESKEW_DEGREES = 26.0
+CANVAS_REFINEMENT_PAD_PIXELS = 6
 
 
 @dataclass
@@ -562,6 +564,40 @@ def _extract_canvas_line_gray(content: bytes, runtime: ModelRuntime) -> tuple[An
     if int(xs.size) < CANVAS_MIN_INK_PIXELS:
         raise ValueError("Canvas appears blank. Write one Sinhala text line and try again.")
 
+    # Normalize mild writing angle so different pen tilt/placement is more robust at inference.
+    points = runtime.np.column_stack((xs, ys)).astype(runtime.np.float32)
+    if points.shape[0] >= CANVAS_MIN_INK_PIXELS:
+        rect = runtime.cv2.minAreaRect(points)
+        raw_angle = float(rect[2])
+        if raw_angle < -45.0:
+            raw_angle += 90.0
+        elif raw_angle > 45.0:
+            raw_angle -= 90.0
+
+        angle = max(-CANVAS_MAX_DESKEW_DEGREES, min(CANVAS_MAX_DESKEW_DEGREES, raw_angle))
+        if abs(angle) > 0.75:
+            center = (width / 2.0, height / 2.0)
+            matrix = runtime.cv2.getRotationMatrix2D(center, angle, 1.0)
+            gray = runtime.cv2.warpAffine(
+                gray,
+                matrix,
+                (width, height),
+                flags=runtime.cv2.INTER_LINEAR,
+                borderMode=runtime.cv2.BORDER_CONSTANT,
+                borderValue=255,
+            )
+            bw = runtime.cv2.warpAffine(
+                bw,
+                matrix,
+                (width, height),
+                flags=runtime.cv2.INTER_NEAREST,
+                borderMode=runtime.cv2.BORDER_CONSTANT,
+                borderValue=0,
+            )
+            ys, xs = runtime.np.where(bw > 0)
+            if int(xs.size) < CANVAS_MIN_INK_PIXELS:
+                raise ValueError("Canvas appears blank after normalization. Write one clear line and try again.")
+
     x1 = int(xs.min())
     x2 = int(xs.max()) + 1
     y1 = int(ys.min())
@@ -580,6 +616,32 @@ def _extract_canvas_line_gray(content: bytes, runtime: ModelRuntime) -> tuple[An
     line_gray = gray[cy1:cy2, cx1:cx2]
     if line_gray.size == 0:
         raise ValueError("Could not isolate handwriting from canvas image.")
+
+    # Second pass normalization improves robustness for shifted/slanted writing.
+    clahe = runtime.cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(line_gray)
+    _, refined_bw = runtime.cv2.threshold(
+        enhanced,
+        0,
+        255,
+        runtime.cv2.THRESH_BINARY_INV + runtime.cv2.THRESH_OTSU,
+    )
+    refined_bw = runtime.cv2.morphologyEx(
+        refined_bw,
+        runtime.cv2.MORPH_CLOSE,
+        runtime.cv2.getStructuringElement(runtime.cv2.MORPH_RECT, (3, 3)),
+        iterations=1,
+    )
+
+    rys, rxs = runtime.np.where(refined_bw > 0)
+    if int(rxs.size) >= CANVAS_MIN_INK_PIXELS:
+        rx1 = max(0, int(rxs.min()) - CANVAS_REFINEMENT_PAD_PIXELS)
+        rx2 = min(enhanced.shape[1], int(rxs.max()) + 1 + CANVAS_REFINEMENT_PAD_PIXELS)
+        ry1 = max(0, int(rys.min()) - CANVAS_REFINEMENT_PAD_PIXELS)
+        ry2 = min(enhanced.shape[0], int(rys.max()) + 1 + CANVAS_REFINEMENT_PAD_PIXELS)
+        if rx2 > rx1 and ry2 > ry1:
+            enhanced = enhanced[ry1:ry2, rx1:rx2]
+    line_gray = enhanced
 
     if float(runtime.np.mean(line_gray)) < 127:
         line_gray = runtime.cv2.bitwise_not(line_gray)
