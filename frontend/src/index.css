@@ -262,8 +262,54 @@ body {
 }
 
 .canvas-draw-zone {
+  position: relative;
+  z-index: 1;
   cursor: crosshair;
   touch-action: none;
+}
+
+.canvas-ruled-wrap {
+  position: relative;
+}
+
+.canvas-rule-overlay {
+  pointer-events: none;
+  position: absolute;
+  inset: 8px;
+  border-radius: 0.5rem;
+  z-index: 2;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 30px,
+      rgba(59, 130, 246, 0.28) 30px,
+      rgba(59, 130, 246, 0.28) 32px
+    );
+}
+
+.canvas-rule-margin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 12%;
+  width: 2px;
+  background: rgba(236, 72, 153, 0.45);
+}
+
+.theme-light .canvas-rule-overlay {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent 30px,
+      rgba(37, 99, 235, 0.24) 30px,
+      rgba(37, 99, 235, 0.24) 32px
+    );
+}
+
+.theme-light .canvas-rule-margin {
+  background: rgba(219, 39, 119, 0.4);
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -156,6 +156,7 @@ export default function App() {
   const [sortMode, setSortMode] = useState("default");
   const [layoutMode, setLayoutMode] = useState("reader");
   const [textSizeMode, setTextSizeMode] = useState("comfortable");
+  const [inputTab, setInputTab] = useState("upload");
   const [activePreviewKey, setActivePreviewKey] = useState("");
   const [isPreviewExpanded, setIsPreviewExpanded] = useState(false);
   const [cropDialog, setCropDialog] = useState({
@@ -958,146 +959,171 @@ export default function App() {
               className="hidden"
             />
 
-            <div
-              onDragEnter={handleDragEnter}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-              className={`mt-4 rounded-2xl border-2 border-dashed p-5 transition sm:p-6 ${
-                dragActive ? "border-cyan-300 bg-cyan-300/10" : "border-slate-500/60 bg-slate-900/35"
-              }`}
-            >
-              <p className="text-sm text-slate-200 sm:text-base">Drop images here or browse from disk.</p>
+            <div className="mt-4 inline-flex rounded-xl border border-slate-600/80 bg-slate-900/50 p-1">
+              <button
+                onClick={() => setInputTab("upload")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+                  inputTab === "upload"
+                    ? "bg-cyan-300/20 text-cyan-100"
+                    : "text-slate-300 hover:bg-slate-700/50"
+                }`}
+              >
+                Upload tab
+              </button>
+              <button
+                onClick={() => setInputTab("canvas")}
+                className={`rounded-lg px-3 py-1.5 text-xs font-semibold uppercase tracking-wide transition ${
+                  inputTab === "canvas"
+                    ? "bg-cyan-300/20 text-cyan-100"
+                    : "text-slate-300 hover:bg-slate-700/50"
+                }`}
+              >
+                Canvas tab
+              </button>
+            </div>
 
-              <div className="mt-4 flex flex-wrap gap-3">
-                <button
-                  onClick={openFilePicker}
-                  className="rounded-xl border border-cyan-300/70 bg-cyan-300/15 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:bg-cyan-300/25"
-                >
-                  Choose files
-                </button>
-
-                <button
-                  onClick={handleRecognize}
-                  disabled={!files.length || loading || canvasLoading || !apiOnline || !modelConnected}
-                  className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                    !files.length || loading || canvasLoading || !apiOnline || !modelConnected
-                      ? "cursor-not-allowed bg-slate-700/50 text-slate-400"
-                      : "bg-emerald-500/90 text-emerald-950 hover:bg-emerald-400"
-                  }`}
-                >
-                  {loading ? "Recognizing..." : "Recognize"}
-                </button>
-
-                <button
-                  onClick={clearAll}
-                  disabled={!files.length && !results.length}
-                  className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
-                    !files.length && !results.length
-                      ? "cursor-not-allowed border-slate-700/50 text-slate-500"
-                      : "border-slate-500/80 text-slate-200 hover:bg-slate-700/40"
-                  }`}
-                >
-                  Clear
-                </button>
+            {apiOnline && !modelConnected && (
+              <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-200/10 p-3 text-sm text-amber-100">
+                {modelMessage} Put your model file in <b>backend/models/</b> or set <b>MODEL_PATH</b>.
               </div>
+            )}
 
-              {apiOnline && !modelConnected && (
-                <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-200/10 p-3 text-sm text-amber-100">
-                  {modelMessage} Put your model file in <b>backend/models/</b> or set <b>MODEL_PATH</b>.
+            {apiOnline && modelConnected && modelPath && (
+              <p className="mt-3 text-xs text-slate-300">
+                Active model: <span className="font-medium">{modelPath}</span>
+              </p>
+            )}
+
+            {inputTab === "upload" ? (
+              <div
+                onDragEnter={handleDragEnter}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`mt-4 rounded-2xl border-2 border-dashed p-5 transition sm:p-6 ${
+                  dragActive ? "border-cyan-300 bg-cyan-300/10" : "border-slate-500/60 bg-slate-900/35"
+                }`}
+              >
+                <p className="text-sm text-slate-200 sm:text-base">Drop images here or browse from disk.</p>
+
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    onClick={openFilePicker}
+                    className="rounded-xl border border-cyan-300/70 bg-cyan-300/15 px-4 py-2 text-sm font-medium text-cyan-100 transition hover:bg-cyan-300/25"
+                  >
+                    Choose files
+                  </button>
+
+                  <button
+                    onClick={handleRecognize}
+                    disabled={!files.length || loading || canvasLoading || !apiOnline || !modelConnected}
+                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                      !files.length || loading || canvasLoading || !apiOnline || !modelConnected
+                        ? "cursor-not-allowed bg-slate-700/50 text-slate-400"
+                        : "bg-emerald-500/90 text-emerald-950 hover:bg-emerald-400"
+                    }`}
+                  >
+                    {loading ? "Recognizing..." : "Recognize"}
+                  </button>
+
+                  <button
+                    onClick={clearAll}
+                    disabled={!files.length && !results.length}
+                    className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                      !files.length && !results.length
+                        ? "cursor-not-allowed border-slate-700/50 text-slate-500"
+                        : "border-slate-500/80 text-slate-200 hover:bg-slate-700/40"
+                    }`}
+                  >
+                    Clear
+                  </button>
                 </div>
-              )}
 
-              {apiOnline && modelConnected && modelPath && (
-                <p className="mt-3 text-xs text-slate-300">
-                  Active model: <span className="font-medium">{modelPath}</span>
-                </p>
-              )}
-
-              {loading && (
-                <div className="mt-4 overflow-hidden rounded-lg bg-slate-900/50">
-                  <div className="scan-loader h-1.5 w-full rounded-lg bg-cyan-300/70" />
-                </div>
-              )}
-
-              {activePreviewCard && (
-                <div className="mt-5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Active preview</p>
-                    <p className="truncate text-xs text-slate-400">{activePreviewCard.file.name}</p>
+                {loading && (
+                  <div className="mt-4 overflow-hidden rounded-lg bg-slate-900/50">
+                    <div className="scan-loader h-1.5 w-full rounded-lg bg-cyan-300/70" />
                   </div>
-                  <div className="mt-2 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-900/55">
-                    <img
-                      src={activePreviewCard.previewUrl}
-                      alt={activePreviewCard.file.name}
-                      onClick={() => setIsPreviewExpanded(true)}
-                      className="h-[26rem] w-full cursor-zoom-in bg-slate-900/60 p-2 object-contain sm:h-[34rem] lg:h-[40rem]"
-                      loading="lazy"
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <p className="text-xs text-slate-400">{formatBytes(activePreviewCard.file.size)}</p>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={openCropDialog}
-                        className="rounded-lg border border-emerald-300/70 bg-emerald-300/10 px-2.5 py-1 text-xs text-emerald-100 transition hover:bg-emerald-300/20"
-                      >
-                        Crop image
-                      </button>
-                      <button
+                )}
+
+                {activePreviewCard && (
+                  <div className="mt-5">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Active preview</p>
+                      <p className="truncate text-xs text-slate-400">{activePreviewCard.file.name}</p>
+                    </div>
+                    <div className="mt-2 overflow-hidden rounded-2xl border border-slate-700/80 bg-slate-900/55">
+                      <img
+                        src={activePreviewCard.previewUrl}
+                        alt={activePreviewCard.file.name}
                         onClick={() => setIsPreviewExpanded(true)}
-                        className="rounded-lg border border-cyan-300/70 bg-cyan-300/10 px-2.5 py-1 text-xs text-cyan-100 transition hover:bg-cyan-300/20"
-                      >
-                        Full view
-                      </button>
+                        className="h-[26rem] w-full cursor-zoom-in bg-slate-900/60 p-2 object-contain sm:h-[34rem] lg:h-[40rem]"
+                        loading="lazy"
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <p className="text-xs text-slate-400">{formatBytes(activePreviewCard.file.size)}</p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={openCropDialog}
+                          className="rounded-lg border border-emerald-300/70 bg-emerald-300/10 px-2.5 py-1 text-xs text-emerald-100 transition hover:bg-emerald-300/20"
+                        >
+                          Crop image
+                        </button>
+                        <button
+                          onClick={() => setIsPreviewExpanded(true)}
+                          className="rounded-lg border border-cyan-300/70 bg-cyan-300/10 px-2.5 py-1 text-xs text-cyan-100 transition hover:bg-cyan-300/20"
+                        >
+                          Full view
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {fileCards.length > 0 && (
-                <div className="mt-5">
-                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Selected files</p>
-                  <ul className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {fileCards.slice(0, FILE_PREVIEW_LIMIT).map((card) => (
-                      <li
-                        key={card.key}
-                        onClick={() => setActivePreviewKey(card.key)}
-                        className={`flex cursor-pointer items-center gap-3 rounded-xl border bg-slate-900/50 px-3 py-2 transition ${
-                          activePreviewCard?.key === card.key
-                            ? "border-cyan-300/70 ring-1 ring-cyan-300/50"
-                            : "border-slate-700/80 hover:border-cyan-300/45"
-                        }`}
-                      >
-                        <img
-                          src={card.previewUrl}
-                          alt={card.file.name}
-                          className="h-16 w-16 flex-none rounded-md border border-slate-700 bg-slate-900/50 p-1 object-contain"
-                          loading="lazy"
-                        />
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm text-slate-100">{card.file.name}</p>
-                          <p className="text-xs text-slate-400">{formatBytes(card.file.size)}</p>
-                        </div>
-                        <button
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            handleRemoveFile(card.key);
-                          }}
-                          className="rounded-lg border border-rose-300/50 px-2 py-1 text-xs text-rose-200 transition hover:bg-rose-400/10"
+                {fileCards.length > 0 && (
+                  <div className="mt-5">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">Selected files</p>
+                    <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+                      {fileCards.slice(0, FILE_PREVIEW_LIMIT).map((card) => (
+                        <li
+                          key={card.key}
+                          onClick={() => setActivePreviewKey(card.key)}
+                          className={`flex cursor-pointer items-center gap-3 rounded-xl border bg-slate-900/50 px-3 py-2 transition ${
+                            activePreviewCard?.key === card.key
+                              ? "border-cyan-300/70 ring-1 ring-cyan-300/50"
+                              : "border-slate-700/80 hover:border-cyan-300/45"
+                          }`}
                         >
-                          Remove
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                  {fileCards.length > FILE_PREVIEW_LIMIT && (
-                    <p className="mt-2 text-xs text-slate-400">Showing first {FILE_PREVIEW_LIMIT} files.</p>
-                  )}
-                </div>
-              )}
-
-              <div className="mt-6 rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4 sm:p-5">
+                          <img
+                            src={card.previewUrl}
+                            alt={card.file.name}
+                            className="h-16 w-16 flex-none rounded-md border border-slate-700 bg-slate-900/50 p-1 object-contain"
+                            loading="lazy"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm text-slate-100">{card.file.name}</p>
+                            <p className="text-xs text-slate-400">{formatBytes(card.file.size)}</p>
+                          </div>
+                          <button
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleRemoveFile(card.key);
+                            }}
+                            className="rounded-lg border border-rose-300/50 px-2 py-1 text-xs text-rose-200 transition hover:bg-rose-400/10"
+                          >
+                            Remove
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                    {fileCards.length > FILE_PREVIEW_LIMIT && (
+                      <p className="mt-2 text-xs text-slate-400">Showing first {FILE_PREVIEW_LIMIT} files.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="mt-4 rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4 sm:p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <h3 className="text-base font-semibold text-white">Single-Line Canvas (Experimental)</h3>
@@ -1110,7 +1136,10 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="mt-3 overflow-hidden rounded-xl border border-slate-600/80 bg-white p-2">
+                <div className="canvas-ruled-wrap mt-3 overflow-hidden rounded-xl border border-slate-600/80 bg-white p-2">
+                  <div className="canvas-rule-overlay" aria-hidden="true">
+                    <span className="canvas-rule-margin" />
+                  </div>
                   <canvas
                     ref={canvasRef}
                     onPointerDown={handleCanvasPointerDown}
@@ -1159,7 +1188,7 @@ export default function App() {
                   </button>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           <div className="glass-card rise-in-delay rounded-3xl p-5 sm:p-6">
