@@ -9,7 +9,7 @@ const FILE_PREVIEW_LIMIT = 12;
 const THEME_STORAGE_KEY = "htr-theme";
 const MIN_CROP_PERCENT = 10;
 const CANVAS_WIDTH = 1200;
-const CANVAS_HEIGHT = 260;
+const CANVAS_HEIGHT = 900;
 const CANVAS_UNDO_LIMIT = 40;
 const CANVAS_BRUSH_SIZE = 1.4;
 const CANVAS_PEN_MIN_SIZE = 0.8;
@@ -148,11 +148,21 @@ function getCanvasStrokeWidth(event) {
   return CANVAS_BRUSH_SIZE;
 }
 
+function getPointerBatch(event) {
+  if (typeof event.getCoalescedEvents === "function") {
+    const coalesced = event.getCoalescedEvents();
+    if (coalesced && coalesced.length) {
+      return coalesced;
+    }
+  }
+  return [event];
+}
+
 function applyCanvasStrokeStyle(ctx, event) {
   if (event.pointerType === "pen") {
-    ctx.lineCap = "butt";
-    ctx.lineJoin = "miter";
-    ctx.miterLimit = 2;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.miterLimit = 10;
     return;
   }
 
@@ -166,6 +176,7 @@ export default function App() {
   const canvasIsDrawingRef = useRef(false);
   const canvasUndoStackRef = useRef([]);
   const lastPointRef = useRef({ x: 0, y: 0 });
+  const lastMidPointRef = useRef({ x: 0, y: 0 });
   const [theme, setTheme] = useState(getInitialTheme);
   const [apiOnline, setApiOnline] = useState(false);
   const [checkingApi, setCheckingApi] = useState(true);
@@ -504,10 +515,13 @@ export default function App() {
     canvas.setPointerCapture(event.pointerId);
     canvasIsDrawingRef.current = true;
     lastPointRef.current = point;
+    lastMidPointRef.current = point;
     applyCanvasStrokeStyle(ctx, event);
     ctx.lineWidth = getCanvasStrokeWidth(event);
     ctx.beginPath();
     ctx.moveTo(point.x, point.y);
+    ctx.lineTo(point.x, point.y);
+    ctx.stroke();
     setCanvasVersion((prev) => prev + 1);
   }
 
@@ -517,16 +531,30 @@ export default function App() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const point = getCanvasPoint(event);
-    if (!ctx || !point) return;
+    if (!ctx) return;
 
-    const lastPoint = lastPointRef.current;
-    applyCanvasStrokeStyle(ctx, event);
-    ctx.lineWidth = getCanvasStrokeWidth(event);
-    ctx.beginPath();
-    ctx.moveTo(lastPoint.x, lastPoint.y);
-    ctx.lineTo(point.x, point.y);
-    ctx.stroke();
-    lastPointRef.current = point;
+    const events = getPointerBatch(event);
+    for (const pointerEvent of events) {
+      const point = getCanvasPoint(pointerEvent);
+      if (!point) continue;
+
+      const lastPoint = lastPointRef.current;
+      const lastMid = lastMidPointRef.current;
+      const midPoint = {
+        x: (lastPoint.x + point.x) * 0.5,
+        y: (lastPoint.y + point.y) * 0.5,
+      };
+
+      applyCanvasStrokeStyle(ctx, pointerEvent);
+      ctx.lineWidth = getCanvasStrokeWidth(pointerEvent);
+      ctx.beginPath();
+      ctx.moveTo(lastMid.x, lastMid.y);
+      ctx.quadraticCurveTo(lastPoint.x, lastPoint.y, midPoint.x, midPoint.y);
+      ctx.stroke();
+
+      lastPointRef.current = point;
+      lastMidPointRef.current = midPoint;
+    }
   }
 
   function handleCanvasPointerUp(event) {
@@ -555,6 +583,8 @@ export default function App() {
     ctx.lineWidth = CANVAS_BRUSH_SIZE;
     canvasUndoStackRef.current = [];
     canvasIsDrawingRef.current = false;
+    lastPointRef.current = { x: 0, y: 0 };
+    lastMidPointRef.current = { x: 0, y: 0 };
     setCanvasVersion((prev) => prev + 1);
   }
 
@@ -579,7 +609,7 @@ export default function App() {
 
     setErrorMessage("");
     if (!canvasHasInk(ctx, canvas.width, canvas.height)) {
-      setErrorMessage("Canvas is empty. Write one Sinhala text line before recognizing.");
+      setErrorMessage("Canvas is empty. Write Sinhala handwriting before recognizing.");
       return;
     }
 
@@ -592,7 +622,7 @@ export default function App() {
       const previewBlob = blob;
       const previewUrl = URL.createObjectURL(previewBlob);
       const formData = new FormData();
-      formData.append("file", blob, "canvas-line.png");
+      formData.append("file", blob, "canvas-page.png");
 
       const response = await axios.post(`${API_BASE}/predict-canvas`, formData, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -603,7 +633,7 @@ export default function App() {
       const text = typeof item?.text === "string" ? item.text : "";
       const keySeed = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
       const sourceKey = `canvas-${keySeed}`;
-      const lineName = item?.line_id || `canvas-line-${canvasResultCount + 1}`;
+      const lineName = item?.line_id || `canvas-page-${canvasResultCount + 1}`;
 
       setCanvasPreviewByKey((prev) => ({ ...prev, [sourceKey]: previewUrl }));
       setResults((prev) => [
@@ -1157,13 +1187,13 @@ export default function App() {
               <div className="mt-4 rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4 sm:p-5">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <h3 className="text-base font-semibold text-white">Single-Line Canvas (Experimental)</h3>
+                    <h3 className="text-base font-semibold text-white">Full-Page Canvas (Experimental)</h3>
                     <p className="mt-1 text-xs text-slate-300 sm:text-sm">
-                      Write one Sinhala text line, then click Recognize.
+                      Write a full Sinhala paragraph/page, then click Recognize.
                     </p>
                   </div>
                   <div className="inline-flex items-center gap-2 rounded-full border border-slate-600/80 bg-slate-900/60 px-3 py-1 text-[11px] uppercase tracking-wide text-slate-300">
-                    One line only
+                    Full page
                   </div>
                 </div>
 
@@ -1178,8 +1208,8 @@ export default function App() {
                     onPointerUp={handleCanvasPointerUp}
                     onPointerCancel={handleCanvasPointerUp}
                     onPointerLeave={handleCanvasPointerUp}
-                    className="canvas-draw-zone h-40 w-full touch-none rounded-lg border border-slate-300 bg-white"
-                    aria-label="Single-line handwriting canvas"
+                    className="canvas-draw-zone aspect-[4/3] w-full touch-none rounded-lg border border-slate-300 bg-white"
+                    aria-label="Full-page handwriting canvas"
                   />
                 </div>
 

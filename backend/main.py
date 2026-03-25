@@ -700,27 +700,24 @@ def _predict_text(runtime: ModelRuntime, content: bytes) -> tuple[str, float, di
 
 
 def _predict_canvas_text(runtime: ModelRuntime, content: bytes) -> tuple[str, float, dict[str, int]]:
-    line_gray, width, height = _extract_canvas_line_gray(content, runtime)
+    bgr, width, height = _decode_image_to_bgr(content, runtime)
+    gray = runtime.cv2.cvtColor(bgr, runtime.cv2.COLOR_BGR2GRAY)
+    blur = runtime.cv2.GaussianBlur(gray, (5, 5), 0)
+    _, bw = runtime.cv2.threshold(
+        blur,
+        0,
+        255,
+        runtime.cv2.THRESH_BINARY_INV + runtime.cv2.THRESH_OTSU,
+    )
+    ink_pixels = int((bw > 0).sum())
+    if ink_pixels < CANVAS_MIN_INK_PIXELS:
+        raise ValueError("Canvas appears blank. Write Sinhala handwriting and try again.")
 
-    runtime.model.eval()
-    with runtime.torch.no_grad():
-        x = _preprocess_line_image(line_gray, runtime)
-        logits = runtime.model(x)
-        decoded = _greedy_decode(logits, runtime.idx2char)
-        text = decoded[0] if decoded else ""
-
-        probs = runtime.torch.softmax(logits, dim=-1)
-        max_probs, pred_ids = runtime.torch.max(probs, dim=-1)
-        p_vals = max_probs.squeeze(0)
-        ids = pred_ids.squeeze(0)
-        non_blank = p_vals[ids != 0]
-        if int(non_blank.numel()) > 0:
-            confidence = float(non_blank.mean().item())
-        else:
-            confidence = 1.0
-
-    confidence = max(0.0, min(1.0, confidence))
-    return text, confidence, {"width": width, "height": height, "detected_lines": 1}
+    # For full-page canvas recognition, reuse the main segmentation+prediction pipeline.
+    text, confidence, meta = _predict_text(runtime, content)
+    meta["width"] = width
+    meta["height"] = height
+    return text, confidence, meta
 
 
 def get_model_status() -> dict[str, Any]:
