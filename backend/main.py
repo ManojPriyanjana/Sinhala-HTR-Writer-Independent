@@ -32,7 +32,7 @@ TRAIN_LABELS_ENV_KEY = "TRAIN_LABELS_PATH"
 MODEL_EXTENSIONS = {".onnx", ".pt", ".pth", ".ckpt", ".bin"}
 SUPPORTED_PYTORCH_EXTENSIONS = {".pt", ".pth", ".ckpt", ".bin"}
 MODEL_IMAGE_HEIGHT = 64
-MODEL_IMAGE_WIDTH = 512
+MODEL_IMAGE_WIDTH = 640
 TEXT_COLUMN_CANDIDATES = ("text", "transcription", "label", "sentence", "gt")
 SEGMENT_MIN_LINE_HEIGHT = 18
 SEGMENT_GAP = 6
@@ -539,6 +539,7 @@ def _preprocess_line_image(line_gray: Any, runtime: ModelRuntime) -> Any:
     canvas = runtime.np.full((MODEL_IMAGE_HEIGHT, MODEL_IMAGE_WIDTH), 255, dtype=runtime.np.uint8)
     canvas[:, :new_width] = resized
     x = runtime.torch.from_numpy(canvas).float().unsqueeze(0).unsqueeze(0) / 255.0
+    x = (x * 2.0) - 1.0
     return x.to(runtime.device)
 
 
