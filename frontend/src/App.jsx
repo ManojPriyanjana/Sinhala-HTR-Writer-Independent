@@ -8,6 +8,10 @@ const PREDICT_TIMEOUT_MS = 90000;
 const FILE_PREVIEW_LIMIT = 12;
 const THEME_STORAGE_KEY = "htr-theme";
 const MIN_CROP_PERCENT = 10;
+const CANVAS_WIDTH = 1200;
+const CANVAS_HEIGHT = 260;
+const CANVAS_UNDO_LIMIT = 40;
+const CANVAS_BRUSH_SIZE = 8;
 
 function clamp01(value) {
   return Math.max(0, Math.min(1, Number(value) || 0));
@@ -113,8 +117,28 @@ function normalizeCropMargins(left, right, top, bottom) {
   };
 }
 
+function canvasHasInk(ctx, width, height) {
+  const image = ctx.getImageData(0, 0, width, height).data;
+  let darkCount = 0;
+  const step = 4 * 4;
+  for (let i = 0; i < image.length; i += step) {
+    const luminance = (image[i] + image[i + 1] + image[i + 2]) / 3;
+    if (luminance < 242) {
+      darkCount += 1;
+      if (darkCount >= 25) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export default function App() {
   const inputRef = useRef(null);
+  const canvasRef = useRef(null);
+  const canvasIsDrawingRef = useRef(false);
+  const canvasUndoStackRef = useRef([]);
+  const lastPointRef = useRef({ x: 0, y: 0 });
   const [theme, setTheme] = useState(getInitialTheme);
   const [apiOnline, setApiOnline] = useState(false);
   const [checkingApi, setCheckingApi] = useState(true);
@@ -149,10 +173,40 @@ export default function App() {
   });
   const [editingByKey, setEditingByKey] = useState({});
   const [draftByKey, setDraftByKey] = useState({});
+  const [, setCanvasVersion] = useState(0);
+  const [canvasLoading, setCanvasLoading] = useState(false);
+  const [canvasResultCount, setCanvasResultCount] = useState(0);
+  const [canvasPreviewByKey, setCanvasPreviewByKey] = useState({});
+  const canvasPreviewByKeyRef = useRef({});
 
   useEffect(() => {
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.width = CANVAS_WIDTH;
+    canvas.height = CANVAS_HEIGHT;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = CANVAS_BRUSH_SIZE;
+  }, []);
+
+  useEffect(() => {
+    canvasPreviewByKeyRef.current = canvasPreviewByKey;
+  }, [canvasPreviewByKey]);
+
+  useEffect(() => {
+    return () => {
+      Object.values(canvasPreviewByKeyRef.current).forEach((url) => URL.revokeObjectURL(url));
+    };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -246,6 +300,14 @@ export default function App() {
     fileCards.forEach((card) => map.set(card.key, card.previewUrl));
     return map;
   }, [fileCards]);
+
+  const allPreviewByKey = useMemo(() => {
+    const map = new Map(previewByKey);
+    Object.entries(canvasPreviewByKey).forEach(([key, url]) => {
+      map.set(key, url);
+    });
+    return map;
+  }, [previewByKey, canvasPreviewByKey]);
 
   const activePreviewCard = useMemo(() => {
     if (!fileCards.length) return null;
@@ -371,12 +433,172 @@ export default function App() {
   }
 
   function clearAll() {
+    Object.values(canvasPreviewByKey).forEach((url) => URL.revokeObjectURL(url));
+    setCanvasPreviewByKey({});
+    setCanvasResultCount(0);
     setFiles([]);
     setActivePreviewKey("");
     setIsPreviewExpanded(false);
     setCropDialog((prev) => ({ ...prev, open: false, processing: false }));
+    handleCanvasClear();
     resetResultViews();
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function getCanvasPoint(event) {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
+    const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
+    return { x, y };
+  }
+
+  function pushCanvasUndoSnapshot() {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const snapshot = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    canvasUndoStackRef.current = [...canvasUndoStackRef.current.slice(-(CANVAS_UNDO_LIMIT - 1)), snapshot];
+  }
+
+  function handleCanvasPointerDown(event) {
+    if (canvasLoading || loading) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const point = getCanvasPoint(event);
+    if (!ctx || !point) return;
+
+    pushCanvasUndoSnapshot();
+    canvas.setPointerCapture(event.pointerId);
+    canvasIsDrawingRef.current = true;
+    lastPointRef.current = point;
+    ctx.beginPath();
+    ctx.moveTo(point.x, point.y);
+    setCanvasVersion((prev) => prev + 1);
+  }
+
+  function handleCanvasPointerMove(event) {
+    if (!canvasIsDrawingRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const point = getCanvasPoint(event);
+    if (!ctx || !point) return;
+
+    const lastPoint = lastPointRef.current;
+    ctx.beginPath();
+    ctx.moveTo(lastPoint.x, lastPoint.y);
+    ctx.lineTo(point.x, point.y);
+    ctx.stroke();
+    lastPointRef.current = point;
+  }
+
+  function handleCanvasPointerUp(event) {
+    const canvas = canvasRef.current;
+    if (canvas) {
+      try {
+        canvas.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore pointer capture release errors from synthetic/fallback events.
+      }
+    }
+    canvasIsDrawingRef.current = false;
+  }
+
+  function handleCanvasClear() {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#000000";
+    ctx.lineWidth = CANVAS_BRUSH_SIZE;
+    canvasUndoStackRef.current = [];
+    canvasIsDrawingRef.current = false;
+    setCanvasVersion((prev) => prev + 1);
+  }
+
+  function handleCanvasUndo() {
+    const canvas = canvasRef.current;
+    if (!canvas || !canvasUndoStackRef.current.length) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const snapshot = canvasUndoStackRef.current[canvasUndoStackRef.current.length - 1];
+    canvasUndoStackRef.current = canvasUndoStackRef.current.slice(0, -1);
+    ctx.putImageData(snapshot, 0, 0);
+    setCanvasVersion((prev) => prev + 1);
+  }
+
+  async function handleCanvasRecognize() {
+    if (!apiOnline || !modelConnected || loading || canvasLoading) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    setErrorMessage("");
+    if (!canvasHasInk(ctx, canvas.width, canvas.height)) {
+      setErrorMessage("Canvas is empty. Write one Sinhala text line before recognizing.");
+      return;
+    }
+
+    setCanvasLoading(true);
+    try {
+      const blob = await new Promise((resolve, reject) => {
+        canvas.toBlob((value) => (value ? resolve(value) : reject(new Error("Canvas export failed."))), "image/png");
+      });
+
+      const previewBlob = blob;
+      const previewUrl = URL.createObjectURL(previewBlob);
+      const formData = new FormData();
+      formData.append("file", blob, "canvas-line.png");
+
+      const response = await axios.post(`${API_BASE}/predict-canvas`, formData, {
+        headers: { "Content-Type": "multipart/form-data" },
+        timeout: PREDICT_TIMEOUT_MS,
+      });
+
+      const item = response?.data?.line || {};
+      const text = typeof item?.text === "string" ? item.text : "";
+      const keySeed = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const sourceKey = `canvas-${keySeed}`;
+      const lineName = item?.line_id || `canvas-line-${canvasResultCount + 1}`;
+
+      setCanvasPreviewByKey((prev) => ({ ...prev, [sourceKey]: previewUrl }));
+      setResults((prev) => [
+        {
+          key: `canvas-result-${keySeed}`,
+          name: lineName,
+          sourceFileKey: sourceKey,
+          sourceFileName: "Canvas input",
+          text,
+          originalText: text,
+          edited: false,
+          confidence: clamp01(item?.confidence),
+          error: Boolean(item?.error),
+          detectedLines: Number(item?.meta?.detected_lines || 1),
+          sourceImageWidth: Number(item?.meta?.width || canvas.width),
+          sourceImageHeight: Number(item?.meta?.height || canvas.height),
+        },
+        ...prev,
+      ]);
+      setCanvasResultCount((prev) => prev + 1);
+    } catch (error) {
+      console.error(error);
+      const detail = error?.response?.data?.detail;
+      setErrorMessage(typeof detail === "string" ? detail : "Canvas recognition failed.");
+    } finally {
+      setCanvasLoading(false);
+    }
   }
 
   function handleDragEnter(event) {
@@ -757,9 +979,9 @@ export default function App() {
 
                 <button
                   onClick={handleRecognize}
-                  disabled={!files.length || loading || !apiOnline || !modelConnected}
+                  disabled={!files.length || loading || canvasLoading || !apiOnline || !modelConnected}
                   className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
-                    !files.length || loading || !apiOnline || !modelConnected
+                    !files.length || loading || canvasLoading || !apiOnline || !modelConnected
                       ? "cursor-not-allowed bg-slate-700/50 text-slate-400"
                       : "bg-emerald-500/90 text-emerald-950 hover:bg-emerald-400"
                   }`}
@@ -874,6 +1096,69 @@ export default function App() {
                   )}
                 </div>
               )}
+
+              <div className="mt-6 rounded-2xl border border-slate-700/80 bg-slate-900/45 p-4 sm:p-5">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-semibold text-white">Single-Line Canvas (Experimental)</h3>
+                    <p className="mt-1 text-xs text-slate-300 sm:text-sm">
+                      Write one Sinhala text line, then click Recognize.
+                    </p>
+                  </div>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-slate-600/80 bg-slate-900/60 px-3 py-1 text-[11px] uppercase tracking-wide text-slate-300">
+                    One line only
+                  </div>
+                </div>
+
+                <div className="mt-3 overflow-hidden rounded-xl border border-slate-600/80 bg-white p-2">
+                  <canvas
+                    ref={canvasRef}
+                    onPointerDown={handleCanvasPointerDown}
+                    onPointerMove={handleCanvasPointerMove}
+                    onPointerUp={handleCanvasPointerUp}
+                    onPointerCancel={handleCanvasPointerUp}
+                    onPointerLeave={handleCanvasPointerUp}
+                    className="canvas-draw-zone h-40 w-full touch-none rounded-lg border border-slate-300 bg-white"
+                    aria-label="Single-line handwriting canvas"
+                  />
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-3">
+                  <button
+                    onClick={handleCanvasClear}
+                    disabled={canvasLoading || loading}
+                    className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                      canvasLoading || loading
+                        ? "cursor-not-allowed border-slate-600 text-slate-500"
+                        : "border-slate-500/80 text-slate-200 hover:bg-slate-700/40"
+                    }`}
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={handleCanvasUndo}
+                    disabled={!canvasUndoStackRef.current.length || canvasLoading || loading}
+                    className={`rounded-xl border px-4 py-2 text-sm font-medium transition ${
+                      !canvasUndoStackRef.current.length || canvasLoading || loading
+                        ? "cursor-not-allowed border-slate-600 text-slate-500"
+                        : "border-cyan-300/70 text-cyan-100 hover:bg-cyan-300/15"
+                    }`}
+                  >
+                    Undo
+                  </button>
+                  <button
+                    onClick={handleCanvasRecognize}
+                    disabled={!apiOnline || !modelConnected || canvasLoading || loading}
+                    className={`rounded-xl px-4 py-2 text-sm font-medium transition ${
+                      !apiOnline || !modelConnected || canvasLoading || loading
+                        ? "cursor-not-allowed bg-slate-700/50 text-slate-400"
+                        : "bg-emerald-500/90 text-emerald-950 hover:bg-emerald-400"
+                    }`}
+                  >
+                    {canvasLoading ? "Recognizing..." : "Recognize"}
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1067,9 +1352,9 @@ export default function App() {
                       </div>
 
                       <div className={`mt-3 flex items-start gap-3 ${layoutMode === "reader" && paragraphLike ? "md:gap-4" : ""}`}>
-                        {result.sourceFileKey && previewByKey.get(result.sourceFileKey) && (
+                        {result.sourceFileKey && allPreviewByKey.get(result.sourceFileKey) && (
                           <img
-                            src={previewByKey.get(result.sourceFileKey)}
+                            src={allPreviewByKey.get(result.sourceFileKey)}
                             alt={result.sourceFileName || result.name}
                             className={`rounded-lg border border-slate-700 bg-slate-900/50 p-1 object-contain ${
                               layoutMode === "reader" && paragraphLike ? "h-24 w-24" : "h-20 w-20"

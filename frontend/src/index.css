@@ -261,6 +261,11 @@ body {
   transition: width 380ms ease-out;
 }
 
+.canvas-draw-zone {
+  cursor: crosshair;
+  touch-action: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .rise-in,
   .rise-in-delay,

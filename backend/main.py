@@ -38,6 +38,9 @@ SEGMENT_MIN_LINE_HEIGHT = 18
 SEGMENT_GAP = 6
 SEGMENT_PADDING = 8
 SEGMENT_HEIGHT_TRIGGER = 140
+CANVAS_MIN_INK_PIXELS = 50
+CANVAS_PAD_X_RATIO = 0.06
+CANVAS_PAD_Y_RATIO = 0.45
 
 
 @dataclass
@@ -525,6 +528,65 @@ def _extract_line_crops(content: bytes, runtime: ModelRuntime) -> tuple[list[Any
     return crops, width, height
 
 
+def _extract_canvas_line_gray(content: bytes, runtime: ModelRuntime) -> tuple[Any, int, int]:
+    bgr, width, height = _decode_image_to_bgr(content, runtime)
+    if width <= 0 or height <= 0:
+        raise ValueError("Invalid image dimensions")
+
+    gray = runtime.cv2.cvtColor(bgr, runtime.cv2.COLOR_BGR2GRAY)
+
+    # If the canvas was exported with dark background/light text, invert before thresholding.
+    border_top = gray[0:1, :].reshape(-1)
+    border_bottom = gray[-1:, :].reshape(-1)
+    border_left = gray[:, 0:1].reshape(-1)
+    border_right = gray[:, -1:].reshape(-1)
+    border = runtime.np.concatenate((border_top, border_bottom, border_left, border_right))
+    if border.size > 0 and float(runtime.np.median(border)) < 127:
+        gray = runtime.cv2.bitwise_not(gray)
+
+    blur = runtime.cv2.GaussianBlur(gray, (5, 5), 0)
+    _, bw = runtime.cv2.threshold(
+        blur,
+        0,
+        255,
+        runtime.cv2.THRESH_BINARY_INV + runtime.cv2.THRESH_OTSU,
+    )
+    bw = runtime.cv2.morphologyEx(
+        bw,
+        runtime.cv2.MORPH_OPEN,
+        runtime.cv2.getStructuringElement(runtime.cv2.MORPH_RECT, (3, 3)),
+        iterations=1,
+    )
+
+    ys, xs = runtime.np.where(bw > 0)
+    if int(xs.size) < CANVAS_MIN_INK_PIXELS:
+        raise ValueError("Canvas appears blank. Write one Sinhala text line and try again.")
+
+    x1 = int(xs.min())
+    x2 = int(xs.max()) + 1
+    y1 = int(ys.min())
+    y2 = int(ys.max()) + 1
+
+    content_width = max(1, x2 - x1)
+    content_height = max(1, y2 - y1)
+    pad_x = max(8, int(content_width * CANVAS_PAD_X_RATIO))
+    pad_y = max(8, int(content_height * CANVAS_PAD_Y_RATIO))
+
+    cx1 = max(0, x1 - pad_x)
+    cx2 = min(width, x2 + pad_x)
+    cy1 = max(0, y1 - pad_y)
+    cy2 = min(height, y2 + pad_y)
+
+    line_gray = gray[cy1:cy2, cx1:cx2]
+    if line_gray.size == 0:
+        raise ValueError("Could not isolate handwriting from canvas image.")
+
+    if float(runtime.np.mean(line_gray)) < 127:
+        line_gray = runtime.cv2.bitwise_not(line_gray)
+
+    return line_gray, width, height
+
+
 def _preprocess_line_image(line_gray: Any, runtime: ModelRuntime) -> Any:
     height, width = line_gray.shape[:2]
     if width <= 0 or height <= 0:
@@ -573,6 +635,30 @@ def _predict_text(runtime: ModelRuntime, content: bytes) -> tuple[str, float, di
     avg_conf = (sum(confidences) / len(confidences)) if confidences else 0.0
     avg_conf = max(0.0, min(1.0, avg_conf))
     return text, avg_conf, {"width": width, "height": height, "detected_lines": len(crops)}
+
+
+def _predict_canvas_text(runtime: ModelRuntime, content: bytes) -> tuple[str, float, dict[str, int]]:
+    line_gray, width, height = _extract_canvas_line_gray(content, runtime)
+
+    runtime.model.eval()
+    with runtime.torch.no_grad():
+        x = _preprocess_line_image(line_gray, runtime)
+        logits = runtime.model(x)
+        decoded = _greedy_decode(logits, runtime.idx2char)
+        text = decoded[0] if decoded else ""
+
+        probs = runtime.torch.softmax(logits, dim=-1)
+        max_probs, pred_ids = runtime.torch.max(probs, dim=-1)
+        p_vals = max_probs.squeeze(0)
+        ids = pred_ids.squeeze(0)
+        non_blank = p_vals[ids != 0]
+        if int(non_blank.numel()) > 0:
+            confidence = float(non_blank.mean().item())
+        else:
+            confidence = 1.0
+
+    confidence = max(0.0, min(1.0, confidence))
+    return text, confidence, {"width": width, "height": height, "detected_lines": 1}
 
 
 def get_model_status() -> dict[str, Any]:
@@ -665,3 +751,38 @@ async def predict(files: list[UploadFile] = File(...)) -> dict[str, Any]:
             )
 
     return {"lines": lines, **status}
+
+
+@app.post("/predict-canvas")
+async def predict_canvas(file: UploadFile = File(...)) -> dict[str, Any]:
+    status = get_model_status()
+    if not status["model_connected"]:
+        raise HTTPException(status_code=503, detail=status["message"])
+
+    model_path = Path(str(status["model_path"]))
+    runtime, runtime_error = _get_runtime(model_path)
+    if runtime is None:
+        detail = runtime_error or "Model runtime is unavailable."
+        raise HTTPException(status_code=503, detail=detail)
+
+    content = await file.read()
+    line_id = file.filename or str(uuid.uuid4())
+    if not content:
+        raise HTTPException(status_code=422, detail="Empty canvas image.")
+
+    try:
+        text, confidence, meta = _predict_canvas_text(runtime, content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Inference failed: {exc}") from exc
+
+    return {
+        "line": {
+            "line_id": line_id,
+            "text": text,
+            "confidence": confidence,
+            "meta": meta,
+        },
+        **status,
+    }
