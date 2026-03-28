@@ -35,3 +35,8 @@ backend/models/*
 node_modules/
 venv/
 __pycache__
+
+#report genaration
+generate_pdf_report.py
+Sinhala_HTR_Complete_System_Report.pdf
+SYSTEM_REPORT.md
