@@ -1,0 +1,15 @@
+test_case_id,test_type,test_objective,input_or_action,expected_result,actual_result,status
+FT-01,Functional,Verify health endpoint success,Start backend and open GET /health,Returns HTTP 200 with status=ok and model_connected field,,Not Run
+FT-02,Functional,Verify prediction for valid image,Upload a valid handwriting image through UI or POST /predict,Returns HTTP 200 with non-empty lines array and confidence values,,Not Run
+FT-03,Functional,Verify missing file validation,Send POST /predict without files,Returns HTTP 422 validation error,,Not Run
+FT-04,Functional,Verify empty file handling,Upload an empty file to /predict,Returns HTTP 200 with line-level error='Empty file',,Not Run
+FT-05,Functional,Verify invalid file handling,Upload non-image content as file to /predict,Returns HTTP 200 with line-level error indicating invalid image,,Not Run
+ST-01,System,End-to-end workflow test,Run backend+frontend then upload one valid handwriting image,UI shows API online and prediction result appears,,Not Run
+ST-02,System,Multi-file request behavior,Upload multiple files in a single request,All files are processed and listed in output lines,,Not Run
+UT-01,Usability,Check clarity of upload workflow,Ask participant to upload and read output without instructions,Participant completes task with minimal confusion,,Not Run
+UT-02,Usability,Check status indicator comprehension,Ask participant what API/model indicators mean,Participant correctly interprets online/offline and model message,,Not Run
+PT-01,Performance,Measure single prediction latency,Run performance_eval.py with runs=1,Response time is recorded successfully,,Not Run
+PT-02,Performance,Measure average prediction latency,Run performance_eval.py with runs=10,Average and per-run times are reported,,Not Run
+CT-01,Compatibility,Browser compatibility check,Run frontend on Chrome and Edge,Core upload and result features work on both browsers,,Not Run
+CT-02,Compatibility,Environment compatibility check,Run backend on Windows test machine,System starts and serves /health and /predict correctly,,Not Run
+UAT-01,User Acceptance,Demo acceptance with supervisor checklist,Execute full demo scenario in presentation context,System behavior is acceptable for academic demo use,,Not Run
