@@ -15,6 +15,36 @@ report/       Report generation assets
 notebooks/    Experiment notebooks
 ```
 
+## Research Training Notebook (Colab)
+
+This repository now includes the final Colab training notebook used for the research model training evidence:
+
+- `notebooks/training/final_writer_independent_densenet121_training.ipynb`
+
+This notebook is the official writer-independent training pipeline for the final experiment and is kept in this project as research evidence for the model training methodology and results.
+
+Key characteristics of this notebook:
+- Uses a strict writer-independent train/validation/test split
+- Trains DenseNet121-CRNN with CTC loss
+- Reports CER (main metric) and WER (secondary metric)
+- Saves reproducible artifacts (split files, charset, history, checkpoint, final metrics)
+- Exports a packaged result archive for backup/download from Colab
+
+Typical Colab workflow:
+1. Open the notebook in Google Colab.
+2. Enable GPU runtime.
+3. Set `DATA_SOURCE_PATH` to your Google Drive dataset zip/folder.
+4. Run cells in order to train and evaluate.
+5. Download/export generated artifacts.
+
+Important generated artifacts:
+- `best_densenet121_writer_independent.pth`
+- `charset.json`
+- `training_history.csv`
+- `final_results.csv`
+
+For application inference, place the final model and charset in `backend/models/`.
+
 ## Prerequisites
 
 - Python 3.10+ (recommended 3.11)
