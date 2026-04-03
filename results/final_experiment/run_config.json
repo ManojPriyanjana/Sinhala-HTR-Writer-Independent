@@ -1,0 +1,17 @@
+{
+  "IMG_HEIGHT": 64,
+  "IMG_WIDTH": 640,
+  "BATCH_SIZE": 12,
+  "TRAIN_RATIO": 0.8,
+  "VAL_RATIO": 0.1,
+  "TEST_RATIO": 0.1,
+  "EPOCHS": 40,
+  "LR": 0.0001,
+  "WEIGHT_DECAY": 0.0001,
+  "PATIENCE": 8,
+  "SEED": 42,
+  "FINAL_DECODER": "beam",
+  "BEAM_WIDTH": 10,
+  "USE_TRAIN_AUGMENT": true,
+  "NORMALIZE_TO_MINUS1_1": true
+}
