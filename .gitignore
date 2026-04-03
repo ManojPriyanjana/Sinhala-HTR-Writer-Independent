@@ -4,8 +4,7 @@ data/segmented_lines/
 data/deleted_lines/
 
 
-# Results (optional)
-results/
+
 
 # Python
 __pycache__/
@@ -20,7 +19,7 @@ data/segmented_lines/
 data/final_splits/
 
 # Debug outputs
-results/
+# results/
 report/figures/
 
 
